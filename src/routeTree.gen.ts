@@ -17,6 +17,7 @@ import { Route as AuthenticatedDashboardRouteImport } from './routes/_authentica
 import { Route as AuthenticatedRegisterRouteImport } from './routes/_authenticated.register'
 import { Route as AuthenticatedSearchRouteImport } from './routes/_authenticated.search'
 import { Route as AuthenticatedAdminIndexRouteImport } from './routes/_authenticated.admin.index'
+import { Route as AuthenticatedAdminRecordsRouteImport } from './routes/_authenticated.admin.records'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -58,6 +59,12 @@ const AuthenticatedAdminIndexRoute = AuthenticatedAdminIndexRouteImport.update({
   path: '/',
   getParentRoute: () => AuthenticatedAdminRoute,
 } as any)
+const AuthenticatedAdminRecordsRoute =
+  AuthenticatedAdminRecordsRouteImport.update({
+    id: '/records',
+    path: '/records',
+    getParentRoute: () => AuthenticatedAdminRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -66,6 +73,7 @@ export interface FileRoutesByFullPath {
   '/dashboard': typeof AuthenticatedDashboardRoute
   '/register': typeof AuthenticatedRegisterRoute
   '/search': typeof AuthenticatedSearchRoute
+  '/admin/records': typeof AuthenticatedAdminRecordsRoute
   '/admin/': typeof AuthenticatedAdminIndexRoute
 }
 export interface FileRoutesByTo {
@@ -74,6 +82,7 @@ export interface FileRoutesByTo {
   '/dashboard': typeof AuthenticatedDashboardRoute
   '/register': typeof AuthenticatedRegisterRoute
   '/search': typeof AuthenticatedSearchRoute
+  '/admin/records': typeof AuthenticatedAdminRecordsRoute
   '/admin': typeof AuthenticatedAdminIndexRoute
 }
 export interface FileRoutesById {
@@ -85,6 +94,7 @@ export interface FileRoutesById {
   '/_authenticated/dashboard': typeof AuthenticatedDashboardRoute
   '/_authenticated/register': typeof AuthenticatedRegisterRoute
   '/_authenticated/search': typeof AuthenticatedSearchRoute
+  '/_authenticated/admin/records': typeof AuthenticatedAdminRecordsRoute
   '/_authenticated/admin/': typeof AuthenticatedAdminIndexRoute
 }
 export interface FileRouteTypes {
@@ -96,6 +106,7 @@ export interface FileRouteTypes {
     | '/dashboard'
     | '/register'
     | '/search'
+    | '/admin/records'
     | '/admin/'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -104,6 +115,7 @@ export interface FileRouteTypes {
     | '/dashboard'
     | '/register'
     | '/search'
+    | '/admin/records'
     | '/admin'
   id:
     | '__root__'
@@ -114,6 +126,7 @@ export interface FileRouteTypes {
     | '/_authenticated/dashboard'
     | '/_authenticated/register'
     | '/_authenticated/search'
+    | '/_authenticated/admin/records'
     | '/_authenticated/admin/'
   fileRoutesById: FileRoutesById
 }
@@ -180,14 +193,23 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AuthenticatedAdminIndexRouteImport
       parentRoute: typeof AuthenticatedAdminRoute
     }
+    '/_authenticated/admin/records': {
+      id: '/_authenticated/admin/records'
+      path: '/records'
+      fullPath: '/admin/records'
+      preLoaderRoute: typeof AuthenticatedAdminRecordsRouteImport
+      parentRoute: typeof AuthenticatedAdminRoute
+    }
   }
 }
 
 interface AuthenticatedAdminRouteChildren {
+  AuthenticatedAdminRecordsRoute: typeof AuthenticatedAdminRecordsRoute
   AuthenticatedAdminIndexRoute: typeof AuthenticatedAdminIndexRoute
 }
 
 const AuthenticatedAdminRouteChildren: AuthenticatedAdminRouteChildren = {
+  AuthenticatedAdminRecordsRoute: AuthenticatedAdminRecordsRoute,
   AuthenticatedAdminIndexRoute: AuthenticatedAdminIndexRoute,
 }
 
