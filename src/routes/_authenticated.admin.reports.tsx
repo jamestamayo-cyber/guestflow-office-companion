@@ -50,7 +50,7 @@ function defaultRange(p: Period): DateRange {
 function Reports() {
   const { state, logExport } = useOvms();
   const [period, setPeriod] = useState<Period>("daily");
-  const [range, setRange] = useState<DateRange | undefined>(() => defaultRange("daily"));
+  const [range, setRange] = useState<DateRange>(() => defaultRange("daily"));
   const from = startOfDay(range?.from ?? new Date());
   const to = endOfDay(range?.to ?? range?.from ?? new Date());
 
@@ -144,7 +144,7 @@ function Reports() {
             </Button>
           </PopoverTrigger>
           <PopoverContent className="w-auto p-0" align="start">
-            <Calendar mode="range" selected={range} onSelect={setRange} numberOfMonths={1} defaultMonth={range?.from ?? new Date()} disabled={{ after: new Date() }} />
+            <Calendar mode="range" selected={range} onSelect={(r) => setRange(r ?? { from: undefined })} numberOfMonths={1} defaultMonth={range.from ?? new Date()} disabled={{ after: new Date() }} />
           </PopoverContent>
         </Popover>
       </div>
