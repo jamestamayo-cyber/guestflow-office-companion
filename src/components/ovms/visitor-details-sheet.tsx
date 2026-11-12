@@ -31,9 +31,11 @@ export function VisitorDetailsSheet({
                 {initials(visitor.fullName)}
               </div>
               <SheetTitle className="text-xl">{visitor.fullName}</SheetTitle>
-              <SheetDescription className="flex items-center gap-2">
-                <span className="font-mono text-xs">{visitor.id}</span>
-                <VisitorStatusBadge visitor={visitor} />
+              <SheetDescription asChild>
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-xs">{visitor.id}</span>
+                  <VisitorStatusBadge visitor={visitor} />
+                </div>
               </SheetDescription>
             </SheetHeader>
 
