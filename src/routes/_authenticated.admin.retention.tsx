@@ -132,7 +132,7 @@ function Retention() {
         open={!!confirm}
         onOpenChange={(o) => !o && setConfirm(null)}
         title={tab === "eligible" ? `Archive ${confirm?.length ?? 0} record(s)?` : `Restore ${confirm?.length ?? 0} record(s)?`}
-        description={tab === "eligible" ? "Archived records are removed from daily search and reports views but kept for audit. You can restore them at any time. This action is logged." : "Restored records will appear again in search and visitor records. This action is logged."}
+        description={tab === "eligible" ? "Archived records are hidden from front-desk search but kept for audit. You can restore them at any time. This action is logged." : "Restored records will appear again in search and visitor records. This action is logged."}
         confirmLabel={tab === "eligible" ? "Archive" : "Restore"}
         onConfirm={run}
       />
