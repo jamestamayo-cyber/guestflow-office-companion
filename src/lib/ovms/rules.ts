@@ -14,7 +14,7 @@ export function authenticate(users: StaffUser[], username: string, password: str
   return { ok: true, user };
 }
 
-export function homeForRole(role: Role) {
+export function homeForRole(role: Role): "/admin" | "/dashboard" {
   return role === "admin" ? "/admin" : "/dashboard";
 }
 
