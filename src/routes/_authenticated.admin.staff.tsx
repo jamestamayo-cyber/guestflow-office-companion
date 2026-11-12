@@ -166,7 +166,7 @@ function StaffForm({ mode, onClose }: { mode: NonNullable<FormMode>; onClose: ()
 
   const errors = {
     name: !name.trim() ? "Full name is required." : undefined,
-    username: !username.trim() ? "Username is required." : !isValidUsername(username.trim().toLowerCase()) ? "3–20 lowercase letters, numbers, dots or underscores; start with a letter." : serverError,
+    username: !username.trim() ? "Username is required." : !isValidUsername(username.trim().toLowerCase()) ? "3–20 lowercase letters, numbers, dots or underscores; start with a letter." : undefined,
     password: !editing && !isStrongPassword(password) ? "Password doesn't meet all the rules below." : undefined,
   };
   const show = (k: keyof typeof errors) => (submitted ? errors[k] : undefined);
@@ -174,7 +174,7 @@ function StaffForm({ mode, onClose }: { mode: NonNullable<FormMode>; onClose: ()
   const save = () => {
     setSubmitted(true);
     setServerError(undefined);
-    if (errors.name || (errors.username && errors.username !== serverError) || errors.password) return;
+    if (errors.name || errors.username || errors.password) return;
     const res = editing ? updateStaff(editing.id, { name, username, role }) : addStaff({ name, username, role, password });
     if (!res.ok) {
       setServerError(res.error);
