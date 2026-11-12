@@ -143,7 +143,11 @@
 }
 
 @media print {
-  [data-print-hide] {
+  [data-print-hide],
+  .peer[data-side] {
     display: none !important;
+  }
+  body {
+    background: white;
   }
 }

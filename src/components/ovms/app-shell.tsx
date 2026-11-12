@@ -171,7 +171,7 @@ export function AppShell({ user, children }: { user: StaffUser; children: ReactN
     <SidebarProvider>
       <AppSidebar user={user} onLogout={handleLogout} />
       <SidebarInset className="min-w-0 bg-background">
-        <header className="sticky top-0 z-20 flex h-16 items-center gap-3 border-b bg-card/90 px-3 backdrop-blur sm:px-5">
+        <header data-print-hide className="sticky top-0 z-20 flex h-16 items-center gap-3 border-b bg-card/90 px-3 backdrop-blur sm:px-5">
           <SidebarTrigger className="size-9" />
           <div className="hidden h-6 w-px bg-border sm:block" />
           <div
