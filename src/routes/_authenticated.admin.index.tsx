@@ -68,10 +68,13 @@ function AdminDashboard() {
                     <span className="text-sm font-semibold">{l.userName}</span>
                     <ActionBadge action={l.action} />
                   </div>
-                  <p className="truncate text-xs text-muted-foreground">
-                    {l.recordId && <span className="font-mono">{l.recordId} · </span>}
-                    {l.details ?? "—"}
-                  </p>
+                  {(l.recordId || l.details) && (
+                    <p className="truncate text-xs text-muted-foreground">
+                      {l.recordId && <span className="font-mono">{l.recordId}</span>}
+                      {l.recordId && l.details && " · "}
+                      {l.details}
+                    </p>
+                  )}
                 </div>
                 <span className="shrink-0 text-[11px] text-muted-foreground">
                   {formatDistanceToNow(new Date(l.timestamp), { addSuffix: true })}

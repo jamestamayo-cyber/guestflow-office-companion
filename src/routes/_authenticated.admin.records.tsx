@@ -78,7 +78,7 @@ function AdminRecords() {
                         <p className="font-mono text-[11px] text-muted-foreground">{v.id}</p>
                       </button>
                     </TableCell>
-                    <TableCell className="font-mono text-xs">{formatPhone(v.contact)}</TableCell>
+                    <TableCell className="whitespace-nowrap font-mono text-xs">{formatPhone(v.contact)}</TableCell>
                     <TableCell className="max-w-[160px] truncate">{v.purpose}</TableCell>
                     <TableCell className="max-w-[180px] truncate">{v.host}</TableCell>
                     <TableCell>

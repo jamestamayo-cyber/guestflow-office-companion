@@ -59,7 +59,7 @@ function SearchRecords() {
                       <p className="font-semibold">{v.fullName}</p>
                       <p className="font-mono text-[11px] text-muted-foreground">{v.id}</p>
                     </TableCell>
-                    <TableCell className="font-mono text-xs">{masked ? maskContact(v.contact) : formatPhone(v.contact)}</TableCell>
+                    <TableCell className="whitespace-nowrap font-mono text-xs">{masked ? maskContact(v.contact) : formatPhone(v.contact)}</TableCell>
                     <TableCell>{v.purpose}</TableCell>
                     <TableCell className="max-w-[200px] truncate">{v.host}</TableCell>
                     <TableCell>
