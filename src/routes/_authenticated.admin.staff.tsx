@@ -70,7 +70,7 @@ function StaffAccounts() {
                   <TableCell className="font-mono text-sm">@{u.username}</TableCell>
                   <TableCell><RoleBadge role={u.role} /></TableCell>
                   <TableCell><AccountStatusBadge status={u.status} /></TableCell>
-                  <TableCell className="text-sm text-muted-foreground">
+                  <TableCell className="whitespace-nowrap text-sm text-muted-foreground">
                     {u.lastLoginAt ? formatDistanceToNow(new Date(u.lastLoginAt), { addSuffix: true }) : "Never"}
                   </TableCell>
                   <TableCell className="pr-5">
