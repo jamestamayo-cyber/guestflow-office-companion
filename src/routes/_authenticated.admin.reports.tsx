@@ -83,7 +83,7 @@ function Reports() {
   }, {});
   const topPurpose = Object.entries(purposeCounts).sort((a, b) => b[1] - a[1])[0];
   const busiest = [...chart].sort((a, b) => b.visits - a.visits)[0];
-  const label = `${period[0].toUpperCase()}${period.slice(1)} report, ${format(from, "MMM d, yyyy")} – ${format(to, "MMM d, yyyy")}`;
+  const label = `${period.charAt(0).toUpperCase()}${period.slice(1)} report, ${format(from, "MMM d, yyyy")} – ${format(to, "MMM d, yyyy")}`;
 
   const exportCsv = () => {
     const header = ["Record ID", "Visitor", "Purpose", "Host", "Time-in", "Time-out", "Duration"];
@@ -144,7 +144,7 @@ function Reports() {
             </Button>
           </PopoverTrigger>
           <PopoverContent className="w-auto p-0" align="start">
-            <Calendar mode="range" selected={range} onSelect={setRange} numberOfMonths={1} defaultMonth={range?.from} disabled={{ after: new Date() }} />
+            <Calendar mode="range" selected={range} onSelect={setRange} numberOfMonths={1} defaultMonth={range?.from ?? new Date()} disabled={{ after: new Date() }} />
           </PopoverContent>
         </Popover>
       </div>

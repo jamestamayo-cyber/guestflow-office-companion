@@ -168,7 +168,7 @@ export function OvmsProvider({ children }: { children: ReactNode }) {
             const v = s.visitors.find((x) => x.id === id);
             if (!v || !v.archived) return;
             v.archived = false;
-            v.archivedAt = undefined;
+            delete v.archivedAt;
             pushLog(s, "Restored record", { recordId: id, details: v.fullName });
           });
         }),
