@@ -28,3 +28,9 @@ use the editor.
   own key and store it in Secrets.
 - **Secrets.** Lovable manages them. Do not put secret values in the repo.
 <!-- LOVABLE:END -->
+
+## Project rules
+
+- All app data (staff, visitors, activity logs, session) lives client-side in `OvmsProvider` (`src/lib/ovms/store.tsx`), persisted to localStorage — this is a clickable prototype with no backend.
+- Pure business rules (sign-in check, role routing, admin access, validation, retention eligibility) live in `src/lib/ovms/*.ts` and are covered by `src/lib/ovms/rules.test.ts`; keep UI-free logic there so it stays testable.
+- Signed-in pages sit under the `_authenticated` layout (app shell + idle auto-logout); admin-only pages sit under `_authenticated.admin`, which renders Access Denied for non-admins.
