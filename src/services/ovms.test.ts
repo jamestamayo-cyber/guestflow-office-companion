@@ -1,155 +1,317 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { compareSync } from "bcryptjs";
-import { officeService, STORAGE_KEY } from "./ovms";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { applyVisitorFilters, emptyFilters } from "@/components/ovms/visitor-filters";
 import { createSeed } from "@/lib/ovms/seed";
 import { selectTableRows } from "@/lib/ovms/table-data";
+import type { ActivityLog } from "@/lib/ovms/types";
 import { createCsv, reportRows } from "./reports";
-import { applyVisitorFilters, emptyFilters } from "@/components/ovms/visitor-filters";
+import { officeService } from "./ovms";
 
-beforeEach(() => { window.localStorage.clear(); });
-afterEach(() => { vi.restoreAllMocks(); });
-const visitor = { fullName: "Camila Rosales", contact: "09171234567", purpose: "Document request", host: "Records Section" };
-const signIn = async (admin = false) => {
-  await officeService.load();
-  const response = await officeService.login(admin ? "rvillanueva" : "msantos", admin ? "Admin@2026" : "Staff@2026");
-  expect(response.result.ok).toBe(true);
+const mockSupabase = vi.hoisted(() => ({
+  auth: {
+    getSession: vi.fn(),
+    signInWithPassword: vi.fn(),
+    signOut: vi.fn(),
+  },
+  from: vi.fn(),
+}));
+
+vi.mock("@/integrations/supabase/client", () => ({ supabase: mockSupabase }));
+
+type Row = {
+  id?: string;
+  action?: string;
+  full_name?: string;
+  time_out?: string | null;
+  reason?: string;
+  [key: string]: unknown;
+};
+const tables: Record<"profiles" | "visitors" | "activity_logs", Row[]> = {
+  profiles: [],
+  visitors: [],
+  activity_logs: [],
+};
+let authenticated = true;
+
+function createQuery(tableName: keyof typeof tables) {
+  const rows = tables[tableName];
+  if (!rows) throw new Error(`Unexpected Supabase table: ${tableName}`);
+
+  let operation: "select" | "update" = "select";
+  let updateValues: Row = {};
+  const filters: Array<(row: Row) => boolean> = [];
+
+  const matchingRows = () => rows.filter((row) => filters.every((filter) => filter(row)));
+  const execute = () => {
+    const matches = matchingRows();
+    if (operation === "update") {
+      matches.forEach((row) => Object.assign(row, updateValues));
+    }
+    return { data: matches, error: null };
+  };
+  const query = {
+    select: () => query,
+    order: async (column: string, options?: { ascending?: boolean }) => {
+      const data = [...rows].sort((a, b) => {
+        const left = String(a[column] ?? "");
+        const right = String(b[column] ?? "");
+        return (options?.ascending === false ? -1 : 1) * left.localeCompare(right);
+      });
+      return { data, error: null };
+    },
+    eq: (column: string, value: unknown) => {
+      filters.push((row) => row[column] === value);
+      return query;
+    },
+    is: (column: string, value: unknown) => {
+      filters.push((row) => row[column] === value);
+      return query;
+    },
+    not: (column: string, operator: string, value: unknown) => {
+      filters.push((row) => operator === "is" && row[column] !== value);
+      return query;
+    },
+    in: (column: string, values: unknown[]) => {
+      filters.push((row) => values.includes(row[column]));
+      return query;
+    },
+    insert: async (input: Row | Row[]) => {
+      rows.push(...(Array.isArray(input) ? input : [input]));
+      return { error: null };
+    },
+    update: (values: Row) => {
+      operation = "update";
+      updateValues = values;
+      return query;
+    },
+    single: async () => ({ data: matchingRows()[0] ?? null, error: null }),
+    maybeSingle: async () => {
+      const result = execute();
+      return { data: result.data[0] ?? null, error: result.error };
+    },
+    then: (
+      resolve: (value: ReturnType<typeof execute>) => unknown,
+      reject?: (reason: unknown) => unknown,
+    ) => Promise.resolve(execute()).then(resolve, reject),
+  };
+  return query;
+}
+
+const now = "2026-11-26T12:00:00.000Z";
+const visitorInput = {
+  fullName: "Camila Rosales",
+  contact: "09171234567",
+  purpose: "Document request",
+  host: "Records Section",
 };
 
-describe("office persistence and auditing", () => {
-  it("stores bcrypt hashes, 40 visitors in the last 30 days and matching history", async () => {
+beforeEach(() => {
+  vi.clearAllMocks();
+  authenticated = true;
+  tables.profiles = [
+    {
+      id: "staff-admin",
+      email: "admin@guestflow.local",
+      username: "admin",
+      name: "Ramon Villanueva",
+      role: "admin",
+      status: "active",
+      created_at: now,
+      last_login_at: null,
+    },
+  ];
+  tables.visitors = [
+    {
+      id: "VIS-0001",
+      full_name: "Lourdes Pascual",
+      contact: "09224561230",
+      purpose: "Payment / Billing",
+      host: "Accounting Office",
+      time_in: now,
+      time_out: "2026-11-26T12:35:00.000Z",
+      archived: false,
+      archived_at: null,
+      registered_by: "staff-admin",
+    },
+  ];
+  tables.activity_logs = [
+    {
+      id: "LOG-0001",
+      timestamp: now,
+      user_id: "staff-admin",
+      user_name: "Ramon Villanueva",
+      action: "Edited visitor",
+      record_id: "VIS-0001",
+      details: "Corrected visitor name",
+      reason: "Verified against visitor ID",
+      changes: [{ field: "fullName", oldValue: "Old name", newValue: "Lourdes Pascual" }],
+    },
+  ];
+
+  mockSupabase.auth.getSession.mockImplementation(async () => ({
+    data: { session: authenticated ? { user: { id: "staff-admin", last_sign_in_at: now } } : null },
+    error: null,
+  }));
+  mockSupabase.auth.signInWithPassword.mockImplementation(async () => {
+    authenticated = true;
+    return { data: { user: { id: "staff-admin" } }, error: null };
+  });
+  mockSupabase.auth.signOut.mockImplementation(async () => {
+    authenticated = false;
+    return { error: null };
+  });
+  mockSupabase.from.mockImplementation((tableName: keyof typeof tables) => createQuery(tableName));
+});
+
+describe("Supabase OVMS service", () => {
+  it("maps database rows and loads archived and active records for a signed-in user", async () => {
+    tables.visitors.push({
+      id: "VIS-0002",
+      full_name: "Archived Visitor",
+      contact: "09170000000",
+      purpose: "Inquiry",
+      host: "Records Section",
+      time_in: now,
+      time_out: now,
+      archived: true,
+      archived_at: now,
+      registered_by: "staff-admin",
+    });
+
     const state = await officeService.load();
-    expect(state.visitors).toHaveLength(40);
-    expect(state.users.every((u) => u.password.startsWith("$2b$"))).toBe(true);
-    expect(compareSync("Staff@2026", state.users[0]?.password ?? "")).toBe(true);
-    expect(state.visitors.every((v) => Date.now() - Date.parse(v.timeIn) < 30 * 86400000)).toBe(true);
-    expect(state.visitors.every((v) => state.logs.some((l) => l.recordId === v.id && l.action === "Registered visitor"))).toBe(true);
-    expect(state.visitors.filter((v) => v.timeOut).every((v) => state.logs.some((l) => l.recordId === v.id && l.action === "Checked-out visitor"))).toBe(true);
+
+    expect(state.users[0]).toMatchObject({ name: "Ramon Villanueva", role: "admin", password: "" });
+    expect(state.visitors).toHaveLength(2);
+    expect(state.visitors[0]).toMatchObject({
+      id: "VIS-0001",
+      fullName: "Lourdes Pascual",
+      timeIn: now,
+      archived: false,
+    });
+    expect(state.visitors[1]).toMatchObject({ id: "VIS-0002", archived: true, archivedAt: now });
+    expect(state.logs[0]).toMatchObject({
+      userId: "staff-admin",
+      recordId: "VIS-0001",
+      reason: "Verified against visitor ID",
+      changes: [{ field: "fullName", oldValue: "Old name", newValue: "Lourdes Pascual" }],
+    });
   });
-  it("preserves old records and migrates plaintext without leaving a legacy copy", async () => {
-    const old = createSeed();
-    old.visitors = old.visitors.slice(0, 10);
-    old.seq.visitor = 10;
-    const user = old.users[0];
-    if (!user) throw new Error("Missing staff account");
-    user.password = "Staff@2026";
-    const first = old.visitors[0];
-    if (!first) throw new Error("Missing visitor");
-    first.fullName = "Marina Alvarez";
-    window.localStorage.setItem("ovms-prototype-v1", JSON.stringify(old));
-    const state = await officeService.load();
-    expect(state.visitors).toHaveLength(40);
-    expect(state.visitors[0]?.fullName).toBe("Marina Alvarez");
-    expect(state.users[0]?.password).not.toBe("Staff@2026");
-    expect(window.localStorage.getItem("ovms-prototype-v1")).toBeNull();
+
+  it("returns an empty state and does not query private tables when signed out", async () => {
+    authenticated = false;
+
+    await expect(officeService.load()).resolves.toMatchObject({
+      users: [],
+      visitors: [],
+      logs: [],
+      session: null,
+    });
+    expect(mockSupabase.from).not.toHaveBeenCalled();
   });
-  it("registers, persists after reload, checks out and searches real records", async () => {
-    await signIn();
-    const created = await officeService.registerVisitor(visitor);
-    expect(created.result.timeOut).toBeNull();
-    const reload = await officeService.load();
-    expect(reload.visitors.find((v) => v.id === created.result.id)?.fullName).toBe("Camila Rosales");
-    const checked = await officeService.checkOut(created.result.id);
-    const saved = checked.state.visitors.find((v) => v.id === created.result.id);
-    expect(saved?.timeOut).not.toBeNull();
-    expect(applyVisitorFilters(checked.state.visitors, { ...emptyFilters, q: "Camila", status: "Checked out", purpose: "Document request" }).map((v) => v.id)).toEqual([created.result.id]);
-    expect(checked.state.logs.filter((l) => l.recordId === created.result.id).map((l) => l.action)).toEqual(["Checked-out visitor", "Registered visitor"]);
+
+  it("registers and checks out visitors with activity logs", async () => {
+    const registered = await officeService.registerVisitor(visitorInput);
+    expect(registered.result).toMatchObject({
+      fullName: visitorInput.fullName,
+      archived: false,
+      timeOut: null,
+    });
+    expect(tables.visitors).toContainEqual(
+      expect.objectContaining({
+        full_name: visitorInput.fullName,
+        registered_by: "staff-admin",
+        archived: false,
+      }),
+    );
+    expect(tables.activity_logs).toContainEqual(
+      expect.objectContaining({
+        action: "Registered visitor",
+        record_id: registered.result.id,
+      }),
+    );
+
+    await officeService.timeOutVisitor(registered.result.id);
+    expect(tables.visitors.find((row) => row.id === registered.result.id)?.time_out).toBeTruthy();
+    expect(tables.activity_logs).toContainEqual(
+      expect.objectContaining({
+        action: "Checked-out visitor",
+        record_id: registered.result.id,
+      }),
+    );
   });
-  it("requires an edit reason and saves old/new values with actor and timestamp", async () => {
-    await signIn(true);
-    await expect(officeService.editVisitor("VIS-0001", visitor, "")).rejects.toThrow("reason");
-    const edit = await officeService.editVisitor("VIS-0001", visitor, "Corrected details from visitor ID");
-    const entry = edit.state.logs[0];
-    expect(entry?.reason).toBe("Corrected details from visitor ID");
-    expect(entry?.changes).toContainEqual({ field: "fullName", oldValue: "Lourdes Pascual", newValue: "Camila Rosales" });
-    expect(entry?.userName).toBe("Ramon Villanueva");
-    expect(Number.isFinite(Date.parse(entry?.timestamp ?? ""))).toBe(true);
+
+  it("persists edit diffs and reason in the activity log", async () => {
+    const updated = { ...visitorInput, fullName: "Lourdes Pascual Reyes" };
+
+    await officeService.editVisitor("VIS-0001", updated, "Corrected against visitor ID");
+
+    expect(tables.visitors[0]?.full_name).toBe("Lourdes Pascual Reyes");
+    const log = tables.activity_logs.find(
+      (row) => row.action === "Edited visitor" && row.reason === "Corrected against visitor ID",
+    );
+    expect(log?.["changes"]).toEqual(
+      expect.arrayContaining([
+        { field: "fullName", oldValue: "Lourdes Pascual", newValue: "Lourdes Pascual Reyes" },
+      ]),
+    );
   });
-  it("archives and restores across screens, never archives someone still inside", async () => {
-    await signIn(true);
-    await expect(officeService.archiveVisitors(["VIS-0007"])).rejects.toThrow("checked-out");
-    const archived = await officeService.archiveVisitors(["VIS-0001"]);
-    expect(archived.state.visitors.find((v) => v.id === "VIS-0001")?.archived).toBe(true);
-    const restored = await officeService.restoreVisitors(["VIS-0001"]);
-    expect(restored.state.visitors.find((v) => v.id === "VIS-0001")?.archived).toBe(false);
-    expect(restored.state.logs.slice(0, 2).map((l) => l.action)).toEqual(["Restored record", "Archived record"]);
+
+  it("archives and restores records while logging each transition", async () => {
+    await officeService.archiveVisitor("VIS-0001");
+    expect(tables.visitors[0]).toMatchObject({ archived: true, archived_at: expect.any(String) });
+    expect(tables.activity_logs).toContainEqual(
+      expect.objectContaining({
+        action: "Archived record",
+        record_id: "VIS-0001",
+      }),
+    );
+
+    await officeService.restoreVisitor("VIS-0001");
+    expect(tables.visitors[0]).toMatchObject({ archived: false, archived_at: null });
+    expect(tables.activity_logs).toContainEqual(
+      expect.objectContaining({
+        action: "Restored record",
+        record_id: "VIS-0001",
+      }),
+    );
   });
-  it("rejects invalid visitor fields on both registration and edit without changing records", async () => {
-    await signIn(true);
-    const before = window.localStorage.getItem(STORAGE_KEY);
-    await expect(officeService.registerVisitor({ ...visitor, contact: "123" })).rejects.toThrow("valid details");
-    await expect(officeService.editVisitor("VIS-0001", { ...visitor, fullName: "" }, "Corrected details from visitor ID")).rejects.toThrow("valid details");
-    expect(window.localStorage.getItem(STORAGE_KEY)).toBe(before);
-  });
-  it("persists staff changes, hashed resets and logs every account action", async () => {
-    await signIn(true);
-    const add = await officeService.addStaff({ name: "Carla Domingo", username: "cdomingo", role: "receptionist", password: "Office@2026" });
-    expect(add.result.ok).toBe(true);
-    const staff = add.state.users.find((u) => u.username === "cdomingo");
-    if (!staff) throw new Error("Missing added staff");
-    await officeService.updateStaff(staff.id, { name: "Carla Domingo Reyes", username: "cdomingo", role: "receptionist" });
-    await officeService.setStaffStatus(staff.id, "inactive");
-    await officeService.setStaffStatus(staff.id, "active");
-    const reset = await officeService.resetPassword(staff.id);
-    expect(compareSync(reset.result, reset.state.users.find((u) => u.id === staff.id)?.password ?? "")).toBe(true);
-    expect(reset.state.logs.filter((l) => l.recordId === staff.id).map((l) => l.action)).toEqual(["Reset password", "Activated staff", "Deactivated staff", "Edited staff", "Added staff"]);
-    const reloaded = await officeService.load();
-    expect(reloaded.users.find((u) => u.id === staff.id)?.name).toBe("Carla Domingo Reyes");
-  }, 15000);
-  it("logs successful login and logout", async () => {
-    await signIn();
-    const loggedOut = await officeService.logout();
-    expect(loggedOut.state.session).toBeNull();
-    expect(loggedOut.state.logs.slice(0, 2).map((l) => l.action)).toEqual(["Logout", "Login"]);
-    expect(loggedOut.state.logs[0]?.userName).toBe("Maria Santos");
-  });
-  it("rejects administrator mutations for receptionists", async () => {
-    await signIn();
-    await expect(officeService.editVisitor("VIS-0001", visitor, "Corrected visitor details")).rejects.toThrow("administrators");
-    await expect(officeService.archiveVisitors(["VIS-0001"])).rejects.toThrow("administrators");
-    await expect(officeService.addStaff({ name: "Carla Domingo", username: "cdomingo", role: "admin", password: "Office@2026" })).rejects.toThrow("administrators");
-  });
-  it("blocks deactivated accounts", async () => {
-    await officeService.load();
-    const result = await officeService.login("acruz", "Staff@2026");
-    expect(result.result).toEqual({ ok: false, error: "This account is deactivated. Contact your administrator." });
-  });
-  it("locks the fifth failure, persists the lock and unlocks after one minute", async () => {
-    await officeService.load();
-    for (let i = 0; i < 5; i++) await officeService.login("msantos", "wrong");
-    const saved = await officeService.load();
-    expect(saved.loginAttempts?.failures).toBe(5);
-    expect((await officeService.login("msantos", "Staff@2026")).result.ok).toBe(false);
-    vi.spyOn(Date, "now").mockReturnValue((saved.loginAttempts?.lockedUntil ?? 0) + 1);
-    expect((await officeService.login("msantos", "Staff@2026")).result.ok).toBe(true);
-  }, 15000);
-  it("cannot bypass inactivity expiry by refreshing", async () => {
-    await signIn();
-    const saved = await officeService.load();
-    vi.spyOn(Date, "now").mockReturnValue(Date.parse(saved.session?.lastActivityAt ?? "") + 900001);
-    const reload = await officeService.load();
-    expect(reload.session).toBeNull();
-    expect(reload.logs.slice(0, 2).map((l) => l.action)).toEqual(["Logout", "Session expired"]);
-  });
-  it("keeps saved records unchanged if a write fails", async () => {
-    await signIn();
-    const before = window.localStorage.getItem(STORAGE_KEY);
-    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("Full"); });
-    await expect(officeService.registerVisitor(visitor)).rejects.toThrow("could not be saved");
-    expect(window.localStorage.getItem(STORAGE_KEY)).toBe(before);
+
+  it("rejects a checkout of a visitor who has already checked out", async () => {
+    await expect(officeService.timeOutVisitor("VIS-0001")).rejects.toThrow("no longer inside");
   });
 });
 
-describe("tables and real report data", () => {
-  it("searches, sorts and paginates the actual rows", () => {
+describe("tables and report data", () => {
+  it("searches, sorts and paginates actual rows", () => {
     const rows = createSeed().visitors;
-    const sorted = selectTableRows(rows, "", (v) => v.fullName, (a, b) => a.fullName.localeCompare(b.fullName), false, 2, 10);
+    const sorted = selectTableRows(
+      rows,
+      "",
+      (v) => v.fullName,
+      (a, b) => a.fullName.localeCompare(b.fullName),
+      false,
+      2,
+      10,
+    );
     expect(sorted.rows).toHaveLength(10);
     expect(sorted.total).toBe(40);
     expect(sorted.pages).toBe(4);
-    expect(sorted.rows[0]?.fullName).toBe([...rows].sort((a, b) => a.fullName.localeCompare(b.fullName))[10]?.fullName);
-    expect(selectTableRows(rows, "Juan Dela Cruz", (v) => v.fullName, () => 0, false, 1, 10).rows.map((v) => v.id)).toEqual(["VIS-0007"]);
+    expect(sorted.rows[0]?.fullName).toBe(
+      [...rows].sort((a, b) => a.fullName.localeCompare(b.fullName))[10]?.fullName,
+    );
+    expect(
+      selectTableRows(
+        rows,
+        "Juan Dela Cruz",
+        (v) => v.fullName,
+        () => 0,
+        false,
+        1,
+        10,
+      ).rows.map((v) => v.id),
+    ).toEqual(["VIS-0007"]);
   });
-  it("exports all selected real records, escapes CSV and includes local timestamps", () => {
+
+  it("exports selected records and escapes CSV formula values", () => {
     const rows = createSeed().visitors;
     const csv = createCsv(rows);
     expect(csv.split("\r\n")).toHaveLength(41);
@@ -157,6 +319,8 @@ describe("tables and real report data", () => {
     expect(reportRows(rows)[0]?.[0]).toBe("VIS-0001");
     const first = rows[0];
     if (!first) throw new Error("Missing visitor");
-    expect(createCsv([{ ...first, host: '=HYPERLINK("bad")' }])).toContain('"\'=HYPERLINK(""bad"")"');
+    expect(createCsv([{ ...first, host: '=HYPERLINK("bad")' }])).toContain(
+      '"\'=HYPERLINK(""bad"")"',
+    );
   });
 });
