@@ -78,6 +78,14 @@ function createQuery(tableName: keyof typeof tables) {
       rows.push(...(Array.isArray(input) ? input : [input]));
       return { error: null };
     },
+    upsert: async (input: Row | Row[]) => {
+      for (const item of Array.isArray(input) ? input : [input]) {
+        const existing = rows.find((row) => row.id === item.id);
+        if (existing) Object.assign(existing, item);
+        else rows.push(item);
+      }
+      return { error: null };
+    },
     update: (values: Row) => {
       operation = "update";
       updateValues = values;
@@ -106,6 +114,8 @@ const visitorInput = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  localStorage.clear();
+  Object.defineProperty(navigator, "onLine", { configurable: true, value: true });
   authenticated = true;
   tables.profiles = [
     {
@@ -277,6 +287,83 @@ describe("Supabase OVMS service", () => {
 
   it("rejects a checkout of a visitor who has already checked out", async () => {
     await expect(officeService.timeOutVisitor("VIS-0001")).rejects.toThrow("no longer inside");
+  });
+
+  it("queues offline registrations and checkouts, then replays them in order", async () => {
+    await officeService.load();
+    Object.defineProperty(navigator, "onLine", { configurable: true, value: false });
+
+    const registered = await officeService.registerVisitor(visitorInput);
+    expect(registered.queued).toBe(true);
+    expect(registered.result.id).toMatch(/^VIS-/);
+    expect(registered.state.visitors).toContainEqual(
+      expect.objectContaining({
+        id: registered.result.id,
+        fullName: visitorInput.fullName,
+        timeOut: null,
+      }),
+    );
+    expect(officeService.getPendingSyncCount()).toBe(1);
+
+    const checkedOut = await officeService.timeOutVisitor(registered.result.id);
+    expect(checkedOut.queued).toBe(true);
+    expect(
+      checkedOut.state.visitors.find((visitor) => visitor.id === registered.result.id)?.timeOut,
+    ).toBeTruthy();
+    expect(officeService.getPendingSyncCount()).toBe(2);
+    expect(tables.visitors.some((row) => row.id === registered.result.id)).toBe(false);
+    const offlineReload = await officeService.load();
+    expect(
+      offlineReload.visitors.find((visitor) => visitor.id === registered.result.id)?.timeOut,
+    ).toBeTruthy();
+
+    Object.defineProperty(navigator, "onLine", { configurable: true, value: true });
+    await officeService.syncOfflineQueue();
+
+    expect(officeService.getPendingSyncCount()).toBe(0);
+    expect(tables.visitors.find((row) => row.id === registered.result.id)?.time_out).toBeTruthy();
+    expect(tables.activity_logs).toContainEqual(
+      expect.objectContaining({ action: "Registered visitor", record_id: registered.result.id }),
+    );
+    expect(tables.activity_logs).toContainEqual(
+      expect.objectContaining({ action: "Checked-out visitor", record_id: registered.result.id }),
+    );
+  });
+
+  it("queues and replays edits, archives, and restores in order", async () => {
+    await officeService.load();
+    Object.defineProperty(navigator, "onLine", { configurable: true, value: false });
+
+    await officeService.editVisitor(
+      "VIS-0001",
+      { ...visitorInput, fullName: "Lourdes Pascual Reyes" },
+      "Corrected against visitor ID",
+    );
+    await officeService.archiveVisitor("VIS-0001");
+    const restored = await officeService.restoreVisitor("VIS-0001");
+
+    expect(officeService.getPendingSyncCount()).toBe(3);
+    expect(restored.state.visitors.find((visitor) => visitor.id === "VIS-0001")).toMatchObject({
+      fullName: "Lourdes Pascual Reyes",
+      archived: false,
+    });
+
+    Object.defineProperty(navigator, "onLine", { configurable: true, value: true });
+    await officeService.syncOfflineQueue();
+
+    expect(officeService.getPendingSyncCount()).toBe(0);
+    expect(tables.visitors[0]).toMatchObject({
+      full_name: "Lourdes Pascual Reyes",
+      archived: false,
+      archived_at: null,
+    });
+    expect(tables.activity_logs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ action: "Edited visitor", record_id: "VIS-0001" }),
+        expect.objectContaining({ action: "Archived record", record_id: "VIS-0001" }),
+        expect.objectContaining({ action: "Restored record", record_id: "VIS-0001" }),
+      ]),
+    );
   });
 });
 

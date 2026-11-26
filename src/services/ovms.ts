@@ -71,10 +71,322 @@ let queue: Promise<unknown> = Promise.resolve();
 export type VisitorFields = Pick<Visitor, "fullName" | "contact" | "purpose" | "host">;
 export type StaffResult = { ok: boolean; error?: string };
 
+const QUEUE_KEY = "guestflow_offline_mutations";
+const STATE_KEY = "guestflow_cached_state";
+const QUEUE_CHANGE_EVENT = "guestflow:offline-queue-change";
+type QueueActor = Pick<StaffUser, "id" | "name" | "role">;
+type QueueLog = Omit<ActivityRow, "changes"> & { changes: ActivityLog["changes"] | null };
+type QueuedMutation =
+  | {
+      id: string;
+      type: "REGISTER_VISITOR";
+      timestamp: string;
+      clientTempId: string;
+      payload: { actor: QueueActor; visitor: VisitorRow; log: QueueLog };
+    }
+  | {
+      id: string;
+      type: "TIMEOUT_VISITOR";
+      timestamp: string;
+      payload: { actor: QueueActor; visitorId: string; timeOut: string; log: QueueLog };
+    }
+  | {
+      id: string;
+      type: "EDIT_VISITOR";
+      timestamp: string;
+      payload: {
+        actor: QueueActor;
+        visitorId: string;
+        patch: ReturnType<typeof makeVisitorPatch>;
+        log: QueueLog;
+      };
+    }
+  | {
+      id: string;
+      type: "ARCHIVE_VISITOR" | "RESTORE_VISITOR";
+      timestamp: string;
+      payload: {
+        actor: QueueActor;
+        visitors: VisitorRow[];
+        archivedAt: string | null;
+        logs: QueueLog[];
+      };
+    };
+
 function enqueue<T>(operation: () => Promise<T>): Promise<T> {
   const task = queue.then(operation, operation);
   queue = task.catch(() => undefined);
   return task;
+}
+
+function isBrowserOnline(): boolean {
+  return typeof navigator === "undefined" || navigator.onLine;
+}
+
+function dispatchQueueChange(): void {
+  if (typeof window !== "undefined") window.dispatchEvent(new Event(QUEUE_CHANGE_EVENT));
+}
+
+function readOfflineQueue(): QueuedMutation[] {
+  if (typeof localStorage === "undefined") return [];
+  const stored = localStorage.getItem(QUEUE_KEY);
+  if (!stored) return [];
+  const parsed: unknown = JSON.parse(stored);
+  if (!Array.isArray(parsed)) throw new Error("The offline sync queue is corrupted.");
+  return parsed as QueuedMutation[];
+}
+
+function writeOfflineQueue(items: QueuedMutation[]): void {
+  if (typeof localStorage === "undefined")
+    throw new Error("Offline changes cannot be saved in this browser.");
+  localStorage.setItem(QUEUE_KEY, JSON.stringify(items));
+  dispatchQueueChange();
+}
+
+function getPendingSyncCount(): number {
+  return readOfflineQueue().length;
+}
+
+function readCachedState(): AppState | null {
+  if (typeof localStorage === "undefined") return null;
+  const stored = localStorage.getItem(STATE_KEY);
+  if (!stored) return null;
+  return JSON.parse(stored) as AppState;
+}
+
+function writeCachedState(state: AppState): void {
+  if (typeof localStorage !== "undefined") localStorage.setItem(STATE_KEY, JSON.stringify(state));
+}
+
+function cachedActor(admin = false): StaffUser {
+  const state = readCachedState();
+  if (!state) throw new Error("Load records while online before making offline changes.");
+  const user = state.users.find((candidate) => candidate.id === state.session?.userId);
+  if (!user || user.status !== "active")
+    throw new Error("Sign in while online before making offline changes.");
+  const lastActivity = state.session?.lastActivityAt ?? state.session?.startedAt;
+  if (!lastActivity || sessionRemaining(lastActivity, Date.now()) <= 0)
+    throw new Error("Your session has expired. Please sign in again.");
+  if (admin && user.role !== "admin")
+    throw new Error("Only administrators can perform this action.");
+  const nextActivity = new Date().toISOString();
+  if (state.session) state.session.lastActivityAt = nextActivity;
+  activityUserId = user.id;
+  lastActivityAt = nextActivity;
+  writeCachedState(state);
+  return user;
+}
+
+function isConnectivityError(error: unknown): boolean {
+  if (!isBrowserOnline()) return true;
+  if (error instanceof TypeError) return true;
+  const message = error instanceof Error ? error.message : String(error);
+  return /network|fetch|offline|connection|timed?\s*out|failed to reach/i.test(message);
+}
+
+function queueLog(
+  actor: QueueActor,
+  timestamp: string,
+  action: LogAction,
+  recordIdValue: string,
+  details: string,
+  extra: Pick<ActivityLog, "changes" | "reason"> = {},
+): QueueLog {
+  return {
+    id: recordId("LOG"),
+    timestamp,
+    user_id: actor.id,
+    user_name: actor.name,
+    action,
+    record_id: recordIdValue,
+    details,
+    reason: extra.reason ?? null,
+    changes: extra.changes ?? null,
+  };
+}
+
+function toQueueActor(actor: StaffUser): QueueActor {
+  return { id: actor.id, name: actor.name, role: actor.role };
+}
+
+function applyQueuedMutation(state: AppState, mutation: QueuedMutation): AppState {
+  const visitors = [...state.visitors];
+  const logs = [...state.logs];
+  const addLog = (row: QueueLog) => {
+    const mapped = mapLog(row);
+    const index = logs.findIndex((log) => log.id === mapped.id);
+    if (index >= 0) logs[index] = mapped;
+    else logs.unshift(mapped);
+  };
+
+  if (mutation.type === "REGISTER_VISITOR") {
+    const mapped = mapVisitor(mutation.payload.visitor);
+    if (!visitors.some((visitor) => visitor.id === mapped.id)) visitors.unshift(mapped);
+    addLog(mutation.payload.log);
+  } else if (mutation.type === "TIMEOUT_VISITOR") {
+    const visitor = visitors.find((item) => item.id === mutation.payload.visitorId);
+    if (visitor) visitor.timeOut = mutation.payload.timeOut;
+    addLog(mutation.payload.log);
+  } else if (mutation.type === "EDIT_VISITOR") {
+    const visitor = visitors.find((item) => item.id === mutation.payload.visitorId);
+    if (visitor) {
+      visitor.fullName = mutation.payload.patch.full_name;
+      visitor.contact = mutation.payload.patch.contact;
+      visitor.purpose = mutation.payload.patch.purpose;
+      visitor.host = mutation.payload.patch.host;
+    }
+    addLog(mutation.payload.log);
+  } else {
+    const affectedIds = new Set(mutation.payload.visitors.map((visitor) => visitor.id));
+    for (const visitor of visitors) {
+      if (!affectedIds.has(visitor.id)) continue;
+      visitor.archived = mutation.type === "ARCHIVE_VISITOR";
+      if (mutation.type === "ARCHIVE_VISITOR" && mutation.payload.archivedAt)
+        visitor.archivedAt = mutation.payload.archivedAt;
+      else delete visitor.archivedAt;
+    }
+    mutation.payload.logs.forEach(addLog);
+  }
+  return { ...state, visitors, logs };
+}
+
+function appendOfflineMutation(mutation: QueuedMutation): AppState {
+  const items = readOfflineQueue();
+  items.push(mutation);
+  items.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+  writeOfflineQueue(items);
+  const state = readCachedState();
+  if (!state) throw new Error("Load records while online before making offline changes.");
+  const next = applyQueuedMutation(state, mutation);
+  writeCachedState(next);
+  return next;
+}
+
+async function insertQueueLogs(logs: QueueLog[]): Promise<void> {
+  if (logs.length) {
+    const { error } = await db.from("activity_logs").upsert(logs, { onConflict: "id" });
+    failOnError(error, "Could not write activity logs for queued changes");
+  }
+}
+
+async function replayMutation(mutation: QueuedMutation): Promise<void> {
+  if (mutation.type === "REGISTER_VISITOR") {
+    const { error } = await db
+      .from("visitors")
+      .upsert(mutation.payload.visitor, { onConflict: "id" });
+    failOnError(error, "Could not sync visitor registration");
+    await insertQueueLogs([mutation.payload.log]);
+    return;
+  }
+  if (mutation.type === "TIMEOUT_VISITOR") {
+    const { data, error } = await db
+      .from("visitors")
+      .update({ time_out: mutation.payload.timeOut })
+      .eq("id", mutation.payload.visitorId)
+      .is("time_out", null)
+      .eq("archived", false)
+      .select("*")
+      .maybeSingle();
+    failOnError(error, "Could not sync visitor checkout");
+    if (!data) {
+      const current = await fetchVisitor(mutation.payload.visitorId);
+      if (current.time_out !== mutation.payload.timeOut)
+        throw new Error("Visitor checkout changed before the queued change could sync.");
+    }
+    await insertQueueLogs([mutation.payload.log]);
+    return;
+  }
+  if (mutation.type === "EDIT_VISITOR") {
+    const { error } = await db
+      .from("visitors")
+      .update(mutation.payload.patch)
+      .eq("id", mutation.payload.visitorId);
+    failOnError(error, "Could not sync visitor edit");
+    await insertQueueLogs([mutation.payload.log]);
+    return;
+  }
+
+  const { error } = await db
+    .from("visitors")
+    .update({
+      archived: mutation.type === "ARCHIVE_VISITOR",
+      archived_at: mutation.payload.archivedAt,
+    })
+    .in(
+      "id",
+      mutation.payload.visitors.map((visitor) => visitor.id),
+    );
+  failOnError(
+    error,
+    `Could not sync visitor ${mutation.type === "ARCHIVE_VISITOR" ? "archive" : "restore"}`,
+  );
+  await insertQueueLogs(mutation.payload.logs);
+}
+
+export async function syncOfflineQueue(): Promise<void> {
+  if (!isBrowserOnline()) return;
+  await enqueue(async () => {
+    const items = readOfflineQueue().sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+    while (items.length) {
+      const item = items[0];
+      if (!item) break;
+      try {
+        await replayMutation(item);
+      } catch (error) {
+        console.error("Offline changes could not be synced; they remain queued.", error);
+        break;
+      }
+      items.shift();
+      writeOfflineQueue(items);
+    }
+  });
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("online", () => {
+    void syncOfflineQueue().catch((error: unknown) => {
+      console.error("Offline changes could not be synced; they remain queued.", error);
+    });
+  });
+}
+
+async function mutateVisitorWrite<T>(
+  operation: () => Promise<T>,
+  makeOfflineMutation: () => { mutation: QueuedMutation; result: T },
+): Promise<{ state: AppState; result: T; queued: boolean }> {
+  return enqueue(async () => {
+    if (!isBrowserOnline()) {
+      const { mutation, result } = makeOfflineMutation();
+      return { state: appendOfflineMutation(mutation), result, queued: true };
+    }
+
+    let result: T;
+    try {
+      result = await operation();
+    } catch (error) {
+      if (!isConnectivityError(error)) throw error;
+      const offline = makeOfflineMutation();
+      return {
+        state: appendOfflineMutation(offline.mutation),
+        result: offline.result,
+        queued: true,
+      };
+    }
+
+    try {
+      const state = await loadState();
+      writeCachedState(state);
+      return { state, result, queued: false };
+    } catch (error) {
+      if (!isConnectivityError(error)) throw error;
+      const cached = readCachedState();
+      if (!cached) throw error;
+      const { mutation } = makeOfflineMutation();
+      const state = applyQueuedMutation(cached, mutation);
+      writeCachedState(state);
+      return { state, result, queued: false };
+    }
+  });
 }
 
 function failOnError(error: { message: string } | null, operation: string): void {
@@ -219,6 +531,7 @@ async function loadState(): Promise<AppState> {
   if (!authUser) {
     activityUserId = null;
     lastActivityAt = null;
+    if (typeof localStorage !== "undefined") localStorage.removeItem(STATE_KEY);
     return emptyState();
   }
 
@@ -243,7 +556,7 @@ async function loadState(): Promise<AppState> {
     activityUserId = currentUser.id;
     lastActivityAt = new Date().toISOString();
   }
-  return {
+  const state: AppState = {
     users,
     visitors: (visitorsResult.data ?? []).map((row) => mapVisitor(row as VisitorRow)),
     logs: (logsResult.data ?? []).map((row) => mapLog(row as ActivityRow)),
@@ -254,12 +567,17 @@ async function loadState(): Promise<AppState> {
     },
     seq: { visitor: 0, log: 0, user: users.length },
   };
+  const optimisticState = readOfflineQueue().reduce(applyQueuedMutation, state);
+  writeCachedState(optimisticState);
+  return optimisticState;
 }
 
 async function mutate<T>(operation: () => Promise<T>): Promise<{ state: AppState; result: T }> {
   return enqueue(async () => {
     const result = await operation();
-    return { state: await loadState(), result };
+    const state = await loadState();
+    writeCachedState(state);
+    return { state, result };
   });
 }
 
@@ -273,6 +591,153 @@ function makeVisitorPatch(input: VisitorFields) {
   };
 }
 
+function cachedVisitorRow(id: string): VisitorRow {
+  const visitor = readCachedState()?.visitors.find((item) => item.id === id);
+  if (!visitor) throw new Error("Load records while online before making offline changes.");
+  return {
+    id: visitor.id,
+    full_name: visitor.fullName,
+    contact: visitor.contact,
+    purpose: visitor.purpose,
+    host: visitor.host,
+    time_in: visitor.timeIn,
+    time_out: visitor.timeOut,
+    archived: visitor.archived,
+    archived_at: visitor.archivedAt ?? null,
+    registered_by: visitor.registeredBy,
+  };
+}
+
+function createRegisterMutation(
+  actor: StaffUser,
+  input: VisitorFields,
+  timestamp: string,
+  id: string,
+): Extract<QueuedMutation, { type: "REGISTER_VISITOR" }> {
+  const visitor: VisitorRow = {
+    id,
+    ...makeVisitorPatch(input),
+    registered_by: actor.id,
+    time_in: timestamp,
+    time_out: null,
+    archived: false,
+    archived_at: null,
+  };
+  return {
+    id: crypto.randomUUID(),
+    type: "REGISTER_VISITOR",
+    timestamp,
+    clientTempId: id,
+    payload: {
+      actor: toQueueActor(actor),
+      visitor,
+      log: queueLog(
+        actor,
+        timestamp,
+        "Registered visitor",
+        id,
+        `${visitor.full_name} → ${visitor.host}`,
+      ),
+    },
+  };
+}
+
+function createTimeoutMutation(
+  actor: StaffUser,
+  id: string,
+  timestamp: string,
+): Extract<QueuedMutation, { type: "TIMEOUT_VISITOR" }> {
+  return {
+    id: crypto.randomUUID(),
+    type: "TIMEOUT_VISITOR",
+    timestamp,
+    payload: {
+      actor: toQueueActor(actor),
+      visitorId: id,
+      timeOut: timestamp,
+      log: queueLog(actor, timestamp, "Checked-out visitor", id, cachedVisitorRow(id).full_name),
+    },
+  };
+}
+
+function createEditMutation(
+  actor: StaffUser,
+  id: string,
+  input: VisitorFields,
+  reason: string,
+  timestamp: string,
+  before: VisitorRow,
+): Extract<QueuedMutation, { type: "EDIT_VISITOR" }> {
+  const normalized = normalizeVisitor(input);
+  const columns = {
+    fullName: "full_name",
+    contact: "contact",
+    purpose: "purpose",
+    host: "host",
+  } as const;
+  const changes = (Object.keys(normalized) as (keyof VisitorFields)[])
+    .filter((field) => before[columns[field]] !== normalized[field])
+    .map((field) => ({
+      field,
+      oldValue: before[columns[field]],
+      newValue: normalized[field],
+    }));
+  const details = `${changes.map((change) => `${change.field}: "${change.oldValue}" → "${change.newValue}"`).join("; ") || "No field changes"}. Reason: ${reason.trim()}`;
+  return {
+    id: crypto.randomUUID(),
+    type: "EDIT_VISITOR",
+    timestamp,
+    payload: {
+      actor: toQueueActor(actor),
+      visitorId: id,
+      patch: makeVisitorPatch(input),
+      log: queueLog(actor, timestamp, "Edited visitor", id, details, {
+        changes,
+        reason: reason.trim(),
+      }),
+    },
+  };
+}
+
+function createArchiveMutation(
+  actor: StaffUser,
+  ids: string[],
+  timestamp: string,
+  type: "ARCHIVE_VISITOR" | "RESTORE_VISITOR",
+): QueuedMutation {
+  const cached = readCachedState();
+  const visitors = ids
+    .map((id) => cached?.visitors.find((visitor) => visitor.id === id))
+    .filter((visitor): visitor is Visitor => Boolean(visitor))
+    .filter((visitor) => (type === "ARCHIVE_VISITOR" ? !visitor.archived : visitor.archived))
+    .map((visitor) => cachedVisitorRow(visitor.id));
+  if (
+    type === "ARCHIVE_VISITOR" &&
+    (visitors.length !== ids.length || visitors.some((v) => !v.time_out))
+  )
+    throw new Error("Only checked-out active records can be archived.");
+  const archivedAt = type === "ARCHIVE_VISITOR" ? timestamp : null;
+  return {
+    id: crypto.randomUUID(),
+    type,
+    timestamp,
+    payload: {
+      actor: toQueueActor(actor),
+      visitors,
+      archivedAt,
+      logs: visitors.map((visitor) =>
+        queueLog(
+          actor,
+          timestamp,
+          type === "ARCHIVE_VISITOR" ? "Archived record" : "Restored record",
+          visitor.id,
+          visitor.full_name,
+        ),
+      ),
+    },
+  };
+}
+
 async function fetchVisitor(id: string): Promise<VisitorRow> {
   const { data, error } = await db.from("visitors").select("*").eq("id", id).maybeSingle();
   failOnError(error, "Could not load visitor record");
@@ -282,7 +747,21 @@ async function fetchVisitor(id: string): Promise<VisitorRow> {
 }
 
 export const officeService = {
-  load: () => enqueue(loadState),
+  load: async () => {
+    if (!isBrowserOnline()) {
+      return enqueue(async () => {
+        const cached = readCachedState();
+        if (!cached) throw new Error("Load records while online before using offline mode.");
+        const state = readOfflineQueue().reduce(applyQueuedMutation, cached);
+        writeCachedState(state);
+        return state;
+      });
+    }
+    if (isBrowserOnline() && getPendingSyncCount() > 0) await syncOfflineQueue();
+    return enqueue(loadState);
+  },
+  getPendingSyncCount,
+  syncOfflineQueue,
 
   login: (username: string, password: string): Promise<{ state: AppState; result: AuthResult }> =>
     enqueue(async () => {
@@ -361,171 +840,188 @@ export const officeService = {
       activityUserId = user.id;
     }),
 
-  registerVisitor: (input: VisitorFields) =>
-    mutate(async () => {
-      const user = await getActor();
-      validateVisitorFields(input);
-      const id = recordId("VIS");
-      const visitor = {
-        id,
-        ...makeVisitorPatch(input),
-        registered_by: user.id,
-        time_in: new Date().toISOString(),
-        time_out: null,
-        archived: false,
-        archived_at: null,
-      };
-      const { error } = await db.from("visitors").insert(visitor);
-      failOnError(error, "Could not register visitor");
-      await writeLog(user, "Registered visitor", {
-        recordId: id,
-        details: `${visitor.full_name} → ${visitor.host}`,
-      });
-      return mapVisitor(visitor);
-    }),
+  registerVisitor: (input: VisitorFields) => {
+    const timestamp = new Date().toISOString();
+    const id = recordId("VIS");
+    return mutateVisitorWrite(
+      async () => {
+        const user = await getActor();
+        validateVisitorFields(input);
+        const visitor = {
+          id,
+          ...makeVisitorPatch(input),
+          registered_by: user.id,
+          time_in: timestamp,
+          time_out: null,
+          archived: false,
+          archived_at: null,
+        };
+        const { error } = await db.from("visitors").insert(visitor);
+        failOnError(error, "Could not register visitor");
+        await writeLog(user, "Registered visitor", {
+          recordId: id,
+          details: `${visitor.full_name} → ${visitor.host}`,
+        });
+        return mapVisitor(visitor);
+      },
+      () => {
+        const user = cachedActor();
+        validateVisitorFields(input);
+        const mutation = createRegisterMutation(user, input, timestamp, id);
+        return { mutation, result: mapVisitor(mutation.payload.visitor) };
+      },
+    );
+  },
 
-  checkOut: (id: string) =>
-    mutate(async () => {
-      const user = await getActor();
-      const { data, error } = await db
-        .from("visitors")
-        .update({ time_out: new Date().toISOString() })
-        .eq("id", id)
-        .is("time_out", null)
-        .eq("archived", false)
-        .select("*")
-        .maybeSingle();
-      failOnError(error, "Could not check out visitor");
-      if (!data) throw new Error("This visitor is no longer inside. Refresh the list and retry.");
-      const visitor = mapVisitor(data as VisitorRow);
-      await writeLog(user, "Checked-out visitor", { recordId: id, details: visitor.fullName });
-    }),
+  checkOut: (id: string) => {
+    const timestamp = new Date().toISOString();
+    return mutateVisitorWrite(
+      async () => {
+        const user = await getActor();
+        const { data, error } = await db
+          .from("visitors")
+          .update({ time_out: timestamp })
+          .eq("id", id)
+          .is("time_out", null)
+          .eq("archived", false)
+          .select("*")
+          .maybeSingle();
+        failOnError(error, "Could not check out visitor");
+        if (!data) throw new Error("This visitor is no longer inside. Refresh the list and retry.");
+        const visitor = mapVisitor(data as VisitorRow);
+        await writeLog(user, "Checked-out visitor", { recordId: id, details: visitor.fullName });
+      },
+      () => {
+        const user = cachedActor();
+        const visitor = cachedVisitorRow(id);
+        if (visitor.time_out || visitor.archived)
+          throw new Error("This visitor is no longer inside. Refresh the list and retry.");
+        return { mutation: createTimeoutMutation(user, id, timestamp), result: undefined };
+      },
+    );
+  },
 
   timeOutVisitor: (id: string) => officeService.checkOut(id),
 
-  editVisitor: (id: string, input: VisitorFields, reason: string) =>
-    mutate(async () => {
-      const user = await getActor(true);
-      if (reason.trim().length < 10)
-        throw new Error("Give a reason for edit of at least 10 characters.");
-      validateVisitorFields(input);
-      const before = await fetchVisitor(id);
-      if (before.archived)
-        throw new Error("This record cannot be edited. Restore archived records first.");
-      const normalized = normalizeVisitor(input);
-      const changes = (Object.keys(normalized) as (keyof VisitorFields)[])
-        .filter(
-          (field) =>
-            before[
-              (
-                {
-                  fullName: "full_name",
-                  contact: "contact",
-                  purpose: "purpose",
-                  host: "host",
-                } as const
-              )[field]
-            ] !== normalized[field],
-        )
-        .map((field) => ({
-          field,
-          oldValue:
-            before[
-              (
-                {
-                  fullName: "full_name",
-                  contact: "contact",
-                  purpose: "purpose",
-                  host: "host",
-                } as const
-              )[field]
-            ],
-          newValue: normalized[field],
-        }));
-      const { error } = await db.from("visitors").update(makeVisitorPatch(input)).eq("id", id);
-      failOnError(error, "Could not update visitor record");
-      const details = `${changes.map((change) => `${change.field}: "${change.oldValue}" → "${change.newValue}"`).join("; ") || "No field changes"}. Reason: ${reason.trim()}`;
-      await writeLog(user, "Edited visitor", {
-        recordId: id,
-        changes,
-        reason: reason.trim(),
-        details,
-      });
-    }),
+  editVisitor: (id: string, input: VisitorFields, reason: string) => {
+    const timestamp = new Date().toISOString();
+    return mutateVisitorWrite(
+      async () => {
+        const user = await getActor(true);
+        if (reason.trim().length < 10)
+          throw new Error("Give a reason for edit of at least 10 characters.");
+        validateVisitorFields(input);
+        const before = await fetchVisitor(id);
+        if (before.archived)
+          throw new Error("This record cannot be edited. Restore archived records first.");
+        const mutation = createEditMutation(user, id, input, reason, timestamp, before);
+        const { error } = await db.from("visitors").update(makeVisitorPatch(input)).eq("id", id);
+        failOnError(error, "Could not update visitor record");
+        await insertQueueLogs([mutation.payload.log]);
+      },
+      () => {
+        const user = cachedActor(true);
+        if (reason.trim().length < 10)
+          throw new Error("Give a reason for edit of at least 10 characters.");
+        validateVisitorFields(input);
+        const before = cachedVisitorRow(id);
+        if (before.archived)
+          throw new Error("This record cannot be edited. Restore archived records first.");
+        return {
+          mutation: createEditMutation(user, id, input, reason, timestamp, before),
+          result: undefined,
+        };
+      },
+    );
+  },
 
-  archiveVisitors: (ids: string[]) =>
-    mutate(async () => {
-      const user = await getActor(true);
-      if (ids.length === 0) return;
-      const { data: rows, error: loadError } = await db.from("visitors").select("*").in("id", ids);
-      failOnError(loadError, "Could not load records to archive");
-      const visitors = (rows ?? []) as VisitorRow[];
-      if (visitors.length !== ids.length || visitors.some((row) => !row.time_out || row.archived)) {
-        throw new Error("Only checked-out active records can be archived.");
-      }
-      const archivedAt = new Date().toISOString();
-      const { data: updated, error } = await db
-        .from("visitors")
-        .update({ archived: true, archived_at: archivedAt })
-        .in("id", ids)
-        .eq("archived", false)
-        .not("time_out", "is", null)
-        .select("*");
-      failOnError(error, "Could not archive visitor records");
-      if ((updated ?? []).length !== ids.length)
-        throw new Error("Some records changed before they could be archived. Refresh and retry.");
-      const logs = visitors.map((row) => ({
-        id: recordId("LOG"),
-        timestamp: archivedAt,
-        user_id: user.id,
-        user_name: user.name,
-        action: "Archived record",
-        record_id: row.id,
-        details: row.full_name,
-      }));
-      const { error: logError } = await db.from("activity_logs").insert(logs);
-      failOnError(logError, "Records were archived, but their activity logs could not be saved");
-    }),
+  archiveVisitors: (ids: string[]) => {
+    const timestamp = new Date().toISOString();
+    return mutateVisitorWrite(
+      async () => {
+        const user = await getActor(true);
+        if (ids.length === 0) return;
+        const { data: rows, error: loadError } = await db
+          .from("visitors")
+          .select("*")
+          .in("id", ids);
+        failOnError(loadError, "Could not load records to archive");
+        const visitors = (rows ?? []) as VisitorRow[];
+        if (
+          visitors.length !== ids.length ||
+          visitors.some((row) => !row.time_out || row.archived)
+        ) {
+          throw new Error("Only checked-out active records can be archived.");
+        }
+        const archivedAt = new Date().toISOString();
+        const { data: updated, error } = await db
+          .from("visitors")
+          .update({ archived: true, archived_at: archivedAt })
+          .in("id", ids)
+          .eq("archived", false)
+          .not("time_out", "is", null)
+          .select("*");
+        failOnError(error, "Could not archive visitor records");
+        if ((updated ?? []).length !== ids.length)
+          throw new Error("Some records changed before they could be archived. Refresh and retry.");
+        const logs = visitors.map((row) =>
+          queueLog(user, archivedAt, "Archived record", row.id, row.full_name),
+        );
+        await insertQueueLogs(logs);
+      },
+      () => {
+        const user = cachedActor(true);
+        return {
+          mutation: createArchiveMutation(user, ids, timestamp, "ARCHIVE_VISITOR"),
+          result: undefined,
+        };
+      },
+    );
+  },
 
   archiveVisitor: (id: string) => officeService.archiveVisitors([id]),
 
-  restoreVisitors: (ids: string[]) =>
-    mutate(async () => {
-      const user = await getActor(true);
-      if (ids.length === 0) return;
-      const { data: rows, error: loadError } = await db
-        .from("visitors")
-        .select("*")
-        .in("id", ids)
-        .eq("archived", true);
-      failOnError(loadError, "Could not load records to restore");
-      const visitors = (rows ?? []) as VisitorRow[];
-      if (!visitors.length) return;
-      const restoredAt = new Date().toISOString();
-      const { data: updated, error } = await db
-        .from("visitors")
-        .update({ archived: false, archived_at: null })
-        .in(
-          "id",
-          visitors.map((row) => row.id),
-        )
-        .eq("archived", true)
-        .select("id");
-      failOnError(error, "Could not restore visitor records");
-      if ((updated ?? []).length !== visitors.length)
-        throw new Error("Some records changed before they could be restored. Refresh and retry.");
-      const logs = visitors.map((row) => ({
-        id: recordId("LOG"),
-        timestamp: restoredAt,
-        user_id: user.id,
-        user_name: user.name,
-        action: "Restored record",
-        record_id: row.id,
-        details: row.full_name,
-      }));
-      const { error: logError } = await db.from("activity_logs").insert(logs);
-      failOnError(logError, "Records were restored, but their activity logs could not be saved");
-    }),
+  restoreVisitors: (ids: string[]) => {
+    const timestamp = new Date().toISOString();
+    return mutateVisitorWrite(
+      async () => {
+        const user = await getActor(true);
+        if (ids.length === 0) return;
+        const { data: rows, error: loadError } = await db
+          .from("visitors")
+          .select("*")
+          .in("id", ids)
+          .eq("archived", true);
+        failOnError(loadError, "Could not load records to restore");
+        const visitors = (rows ?? []) as VisitorRow[];
+        if (!visitors.length) return;
+        const restoredAt = new Date().toISOString();
+        const { data: updated, error } = await db
+          .from("visitors")
+          .update({ archived: false, archived_at: null })
+          .in(
+            "id",
+            visitors.map((row) => row.id),
+          )
+          .eq("archived", true)
+          .select("id");
+        failOnError(error, "Could not restore visitor records");
+        if ((updated ?? []).length !== visitors.length)
+          throw new Error("Some records changed before they could be restored. Refresh and retry.");
+        const logs = visitors.map((row) =>
+          queueLog(user, restoredAt, "Restored record", row.id, row.full_name),
+        );
+        await insertQueueLogs(logs);
+      },
+      () => {
+        const user = cachedActor(true);
+        return {
+          mutation: createArchiveMutation(user, ids, timestamp, "RESTORE_VISITOR"),
+          result: undefined,
+        };
+      },
+    );
+  },
 
   restoreVisitor: (id: string) => officeService.restoreVisitors([id]),
 

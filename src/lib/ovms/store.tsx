@@ -50,8 +50,18 @@ export function OvmsProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener("storage", sync);
   }, [retry]);
   const run = useCallback(async <T,>(action: () => Promise<{ state: AppState; result: T }>) => {
-    try { const next = await action(); setState(next.state); setError(null); return next.result; }
-    catch (e) { const message = e instanceof Error ? e.message : "This change could not be saved. Please retry."; toast.error(message); throw e; }
+    try {
+      const next = await action();
+      setState(next.state);
+      setError(null);
+      if ("queued" in next && next.queued) toast.info("Saved on this device and queued for sync.");
+      return next.result;
+    } catch (e) {
+      const message =
+        e instanceof Error ? e.message : "This change could not be saved. Please retry.";
+      toast.error(message);
+      throw e;
+    }
   }, []);
   const store = useMemo<Store>(() => ({
     hydrated, loading, error, retry, state, sessionExpired,
