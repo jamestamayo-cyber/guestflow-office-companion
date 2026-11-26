@@ -15,6 +15,8 @@ export default defineConfig({
     plugins: [
       VitePWA({
         registerType: "autoUpdate",
+        injectRegister: null,
+        outDir: ".output/public",
         includeAssets: ["favicon.svg", "pwa-192x192.png", "pwa-512x512.png"],
         manifest: {
           name: "GuestFlow Office Companion",
@@ -31,7 +33,18 @@ export default defineConfig({
         },
         workbox: {
           globPatterns: ["**/*.{html,js,css,svg,png,woff2}"],
+          navigateFallback: "/",
+          navigateFallbackDenylist: [/^\/api/, /\.[a-z0-9]+$/i],
           runtimeCaching: [
+            {
+              urlPattern: ({ request }) => request.mode === "navigate",
+              handler: "NetworkFirst",
+              options: {
+                cacheName: "guestflow-html-cache",
+                networkTimeoutSeconds: 3,
+                expiration: { maxEntries: 20, maxAgeSeconds: 60 * 60 * 24 * 7 },
+              },
+            },
             {
               urlPattern: ({ url, request }) =>
                 request.method === "GET" &&
