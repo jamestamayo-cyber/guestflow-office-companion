@@ -80,7 +80,10 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     // Each content route, / included, sets its own head(). Never add og:image or twitter:image here.
     meta: [
       { charSet: "utf-8" },
-      { name: "viewport", content: "width=device-width, initial-scale=1" },
+      { name: "viewport", content: "width=device-width, initial-scale=1, viewport-fit=cover" },
+      { name: "mobile-web-app-capable", content: "yes" },
+      { name: "apple-mobile-web-app-capable", content: "yes" },
+      { name: "apple-mobile-web-app-status-bar-style", content: "default" },
       { title: "Administrative Services Office — Visitor Management" },
       { name: "description", content: "Digital visitor logbook for administrative offices." },
       { property: "og:title", content: "Administrative Services Office — Visitor Management" },
@@ -127,11 +130,39 @@ function RootComponent() {
   const { queryClient } = Route.useRouteContext();
 
   useEffect(() => {
-    if (typeof window !== "undefined" && "serviceWorker" in navigator) {
-      navigator.serviceWorker
-        .register("/sw.js", { scope: "/" })
-        .catch((err) => console.warn("ServiceWorker registration failed:", err));
+    if (typeof window === "undefined" || !("serviceWorker" in navigator)) return;
+
+    // Prevent service worker interference inside editor iframe or preview domains
+    const isIframe = window.self !== window.top;
+    const host = window.location.hostname.toLowerCase();
+    const isPreview =
+      host.includes("id-preview") ||
+      host.includes("preview--") ||
+      /^(?:id-preview|preview)(?:-[a-z0-9]+)?--.+$/.test(host.split(".")[0] ?? "");
+
+    if (isIframe || isPreview) {
+      navigator.serviceWorker.getRegistrations().then((regs) => {
+        regs.forEach((reg) => reg.unregister());
+      });
+      return;
     }
+
+    async function initOfflineEngine() {
+      try {
+        await navigator.serviceWorker.register("/sw.js", { scope: "/" });
+        await navigator.serviceWorker.ready;
+
+        // Warm up the HTML cache immediately so cold launches work in Airplane mode
+        if (navigator.onLine && typeof caches !== "undefined") {
+          const cache = await caches.open("guestflow-html-cache");
+          await cache.add(new Request("/", { credentials: "same-origin" }));
+        }
+      } catch (err) {
+        console.warn("ServiceWorker registration failed:", err);
+      }
+    }
+
+    initOfflineEngine();
   }, []);
 
   return (
