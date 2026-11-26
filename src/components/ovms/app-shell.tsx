@@ -33,6 +33,7 @@ import { navForRole } from "@/lib/ovms/nav";
 import { useOvms } from "@/lib/ovms/store";
 import type { StaffUser } from "@/lib/ovms/types";
 import { cn } from "@/lib/utils";
+import { OfflineStatus } from "./offline-status";
 
 import { IDLE_LIMIT_MS, IDLE_WARNING_MS } from "@/lib/ovms/rules";
 export { IDLE_LIMIT_MS, IDLE_WARNING_MS } from "@/lib/ovms/rules";
@@ -200,6 +201,7 @@ export function AppShell({ user, children }: { user: StaffUser; children: ReactN
             Auto-logout in <span className="tabular font-mono">{mmss(remaining)}</span>
           </div>
           <div className="ml-auto flex items-center gap-2 sm:gap-3">
+            <OfflineStatus />
             <div className="hidden text-right leading-tight sm:block">
               <p className="text-[11px] text-muted-foreground">Logged in as</p>
               <p className="text-sm font-semibold">{user.name}</p>
