@@ -5,7 +5,7 @@ export interface StaffUser {
   id: string;
   name: string;
   username: string;
-  /** Prototype only — a real system stores a salted hash, never the password. */
+  /** Salted bcrypt hash; never a plaintext password. */
   password: string;
   role: Role;
   status: AccountStatus;
@@ -50,13 +50,16 @@ export interface ActivityLog {
   action: LogAction;
   recordId?: string;
   details?: string;
+  changes?: { field: string; oldValue: string; newValue: string }[];
+  reason?: string;
 }
 
 export interface AppState {
   users: StaffUser[];
   visitors: Visitor[];
   logs: ActivityLog[];
-  session: { userId: string; startedAt: string } | null;
+  session: { userId: string; startedAt: string; lastActivityAt?: string } | null;
+  loginAttempts?: { failures: number; lockedUntil: number };
   seq: { visitor: number; log: number; user: number };
 }
 

@@ -18,7 +18,7 @@ export const emptyFilters: VisitorFilterState = { q: "", date: "", status: "all"
 export function applyVisitorFilters(list: Visitor[], f: VisitorFilterState) {
   const q = f.q.trim().toLowerCase();
   return list
-    .filter((v) => !q || v.fullName.toLowerCase().includes(q) || v.id.toLowerCase().includes(q))
+    .filter((v) => !q || v.fullName.toLowerCase().includes(q) || v.id.toLowerCase().includes(q) || v.host.toLowerCase().includes(q) || v.purpose.toLowerCase().includes(q))
     .filter((v) => !f.date || isSameDay(new Date(v.timeIn), new Date(`${f.date}T00:00:00`)))
     .filter((v) => f.status === "all" || visitorStatus(v) === f.status)
     .filter((v) =>

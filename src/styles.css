@@ -72,14 +72,14 @@
   --card-foreground: oklch(0.23 0.025 168);
   --popover: oklch(1 0 0);
   --popover-foreground: oklch(0.23 0.025 168);
-  --primary: oklch(0.55 0.15 152);
+  --primary: oklch(0.47 0.13 152);
   --primary-foreground: oklch(0.99 0.01 150);
   --neon: oklch(0.88 0.22 140);
   --neon-foreground: oklch(0.24 0.06 150);
   --secondary: oklch(0.95 0.025 150);
   --secondary-foreground: oklch(0.32 0.08 152);
   --muted: oklch(0.955 0.005 165);
-  --muted-foreground: oklch(0.5 0.018 168);
+  --muted-foreground: oklch(0.44 0.018 168);
   --accent: oklch(0.945 0.04 148);
   --accent-foreground: oklch(0.33 0.1 152);
   --destructive: oklch(0.58 0.21 25);
@@ -125,7 +125,7 @@
   }
 
   h1, h2, h3 {
-    letter-spacing: -0.02em;
+    letter-spacing: 0;
   }
 }
 
@@ -150,4 +150,13 @@
   body {
     background: white;
   }
+}
+
+@layer base {
+  button, a, input, select, textarea { transition: background-color 160ms ease, border-color 160ms ease, box-shadow 160ms ease; }
+  :focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; }
+  h1, h2, h3, p { overflow-wrap: anywhere; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }

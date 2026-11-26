@@ -1,3 +1,5 @@
+import { useTableData } from "@/components/ovms/table-tools";
+import { DataState } from "@/components/ovms/data-state";
 import { createFileRoute } from "@tanstack/react-router";
 import { Archive, Eye, FileSearch, Pencil, RotateCcw } from "lucide-react";
 import { useState } from "react";
@@ -32,17 +34,19 @@ function AdminRecords() {
   const archiving = find(archiveId);
   const results = applyVisitorFilters(state.visitors, filters);
 
-  const confirmArchive = () => {
+  const confirmArchive = async () => {
     if (!archiving) return;
     if (archiving.archived) {
-      restoreVisitors([archiving.id]);
+      await restoreVisitors([archiving.id]);
       toast.success(`${archiving.id} restored to active records`);
     } else {
-      archiveVisitors([archiving.id]);
+      await archiveVisitors([archiving.id]);
       toast.success(`${archiving.id} archived`);
     }
     setArchiveId(null);
   };
+
+  const table = useTableData(results, [{ label: "Date", value: (v) => -Date.parse(v.timeIn) }, { label: "Name", value: (v) => v.fullName }, { label: "Department", value: (v) => v.host }, { label: "Purpose", value: (v) => v.purpose }], (v) => `${v.id} ${v.fullName} ${v.host} ${v.purpose}`);
 
   return (
     <>
@@ -52,7 +56,9 @@ function AdminRecords() {
         <div className="border-y bg-muted/40 px-5 py-2.5 text-xs text-muted-foreground">
           <span className="font-semibold text-foreground">{results.length}</span> of {state.visitors.length} records
         </div>
-        {results.length === 0 ? (
+        <DataState>
+        {table.controls}
+        {table.total === 0 ? (
           <EmptyState icon={<FileSearch className="size-6" />} title="No matching records" />
         ) : (
           <div className="overflow-x-auto">
@@ -70,7 +76,7 @@ function AdminRecords() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {results.map((v) => (
+                {table.rows.map((v) => (
                   <TableRow key={v.id} className={v.archived ? "opacity-70" : ""}>
                     <TableCell className="pl-5">
                       <button className="text-left hover:text-primary" onClick={() => setViewId(v.id)}>
@@ -100,6 +106,7 @@ function AdminRecords() {
             </Table>
           </div>
         )}
+        </DataState>
       </Panel>
 
       <VisitorDetailsSheet

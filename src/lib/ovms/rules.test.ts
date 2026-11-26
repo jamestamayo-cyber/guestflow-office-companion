@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { subDays } from "date-fns";
 import { createSeed } from "./seed";
-import { authenticate, canAccessAdmin, homeForRole, isEligibleForArchive } from "./rules";
+import { authenticate, canAccessAdmin, homeForRole, isEligibleForArchive, nextLoginFailure, IDLE_LIMIT_MS, IDLE_WARNING_MS, sessionRemaining } from "./rules";
 import { navForRole } from "./nav";
 import { maskContact } from "./format";
 import { isStrongPassword, isValidPhone, validateVisitor } from "./validation";
@@ -34,9 +34,9 @@ describe("role-based access", () => {
 });
 
 describe("seed data", () => {
-  it("has 10 visitors, 3 receptionists and 2 admins", () => {
+  it("has 40 visitors, 3 receptionists and 2 admins", () => {
     const s = createSeed();
-    expect(s.visitors).toHaveLength(10);
+    expect(s.visitors).toHaveLength(40);
     expect(s.users.filter((u) => u.role === "receptionist")).toHaveLength(3);
     expect(s.users.filter((u) => u.role === "admin")).toHaveLength(2);
   });
@@ -76,5 +76,26 @@ describe("retention", () => {
     expect(isEligibleForArchive(old, 180, now)).toBe(true);
     expect(isEligibleForArchive(recent, 180, now)).toBe(false);
     expect(isEligibleForArchive(inside, 180, now)).toBe(false);
+  });
+});
+
+
+describe("sign-in lockout", () => {
+  it("locks for exactly 1 minute after the fifth failed attempt", () => {
+    let attempts = { failures: 0, lockedUntil: 0 };
+    for (let i = 0; i < 4; i++) attempts = nextLoginFailure(attempts, 1000);
+    expect(attempts.lockedUntil).toBe(0);
+    attempts = nextLoginFailure(attempts, 1000);
+    expect(attempts).toEqual({ failures: 5, lockedUntil: 61000 });
+    expect(nextLoginFailure(attempts, 61000)).toEqual({ failures: 1, lockedUntil: 0 });
+  });
+});
+describe("inactivity", () => {
+  it("expires after 15 minutes and warns 60 seconds beforehand", () => {
+    expect(IDLE_LIMIT_MS).toBe(900000);
+    expect(IDLE_WARNING_MS).toBe(60000);
+    const start = "2026-11-26T08:00:00Z";
+    expect(sessionRemaining(start, Date.parse(start) + 840000)).toBe(60000);
+    expect(sessionRemaining(start, Date.parse(start) + 900000)).toBe(0);
   });
 });

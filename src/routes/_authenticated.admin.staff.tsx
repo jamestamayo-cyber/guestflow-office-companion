@@ -1,3 +1,5 @@
+import { useTableData } from "@/components/ovms/table-tools";
+import { DataState } from "@/components/ovms/data-state";
 import { createFileRoute } from "@tanstack/react-router";
 import { Copy, KeyRound, Pencil, Power, UserPlus } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
@@ -34,6 +36,8 @@ function StaffAccounts() {
   const [resetFor, setResetFor] = useState<StaffUser | null>(null);
   const [issued, setIssued] = useState<{ user: StaffUser; password: string } | null>(null);
 
+  const table = useTableData(state.users, [{ label: "Name", value: (u) => u.name }, { label: "Username", value: (u) => u.username }, { label: "Role", value: (u) => u.role }, { label: "Status", value: (u) => u.status }], (u) => `${u.name} ${u.username} ${u.role} ${u.status}`);
+
   return (
     <>
       <PageHeader
@@ -43,6 +47,8 @@ function StaffAccounts() {
         actions={<Button onClick={() => setForm({ kind: "add" })}><UserPlus /> Add Staff</Button>}
       />
       <Panel className="overflow-hidden">
+        <DataState>
+        {table.controls}
         <div className="overflow-x-auto">
           <Table className="min-w-[860px]">
             <TableHeader>
@@ -56,7 +62,7 @@ function StaffAccounts() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {state.users.map((u) => (
+              {table.rows.map((u) => (
                 <TableRow key={u.id}>
                   <TableCell className="pl-5">
                     <div className="flex items-center gap-3">
@@ -90,9 +96,11 @@ function StaffAccounts() {
                   </TableCell>
                 </TableRow>
               ))}
+              {table.total === 0 && <TableRow><TableCell colSpan={6} className="py-10 text-center text-muted-foreground">No accounts match your search.</TableCell></TableRow>}
             </TableBody>
           </Table>
         </div>
+        </DataState>
       </Panel>
 
       <StaffFormDialog mode={form} onClose={() => setForm(null)} />
@@ -104,9 +112,9 @@ function StaffAccounts() {
         title={toggle?.status === "active" ? `Deactivate ${toggle?.name}?` : `Reactivate ${toggle?.name}?`}
         description={toggle?.status === "active" ? "They will be signed out and can no longer log in. Their past records and logs are kept." : "They will be able to sign in again with their existing password."}
         confirmLabel={toggle?.status === "active" ? "Deactivate" : "Activate"}
-        onConfirm={() => {
+        onConfirm={async () => {
           if (!toggle) return;
-          setStaffStatus(toggle.id, toggle.status === "active" ? "inactive" : "active");
+          await setStaffStatus(toggle.id, toggle.status === "active" ? "inactive" : "active");
           toast.success(`${toggle.name} ${toggle.status === "active" ? "deactivated" : "reactivated"}`);
           setToggle(null);
         }}
@@ -119,11 +127,12 @@ function StaffAccounts() {
         title={`Reset password for ${resetFor?.name}?`}
         description="A temporary password will be generated. Their current password stops working immediately."
         confirmLabel="Reset password"
-        onConfirm={() => {
+        onConfirm={async () => {
           if (!resetFor) return;
-          const pwd = resetPassword(resetFor.id);
+          const pwd = await resetPassword(resetFor.id);
           setIssued({ user: resetFor, password: pwd });
           setResetFor(null);
+          toast.success("Password reset successfully");
         }}
       />
 
@@ -135,7 +144,7 @@ function StaffAccounts() {
           </DialogHeader>
           <div className="flex items-center justify-between gap-2 rounded-xl border border-dashed border-primary bg-secondary px-4 py-3">
             <span className="font-mono text-lg font-semibold tracking-wide">{issued?.password}</span>
-            <Button size="icon" variant="ghost" aria-label="Copy" onClick={() => { navigator.clipboard?.writeText(issued?.password ?? ""); toast.success("Copied"); }}><Copy /></Button>
+            <Button size="icon" variant="ghost" aria-label="Copy" onClick={async () => { try { await navigator.clipboard.writeText(issued?.password ?? ""); toast.success("Copied"); } catch { toast.error("Could not copy. Select the password and copy it manually."); } }}><Copy /></Button>
           </div>
           <DialogFooter><Button onClick={() => setIssued(null)}>Done</Button></DialogFooter>
         </DialogContent>
@@ -171,13 +180,14 @@ function StaffForm({ mode, onClose }: { mode: NonNullable<FormMode>; onClose: ()
   };
   const show = (k: keyof typeof errors) => (submitted ? errors[k] : undefined);
 
-  const save = () => {
+  const save = async () => {
     setSubmitted(true);
     setServerError(undefined);
-    if (errors.name || errors.username || errors.password) return;
-    const res = editing ? updateStaff(editing.id, { name, username, role }) : addStaff({ name, username, role, password });
+    if (errors.name || errors.username || errors.password) { toast.error("Please fix the highlighted fields."); return; }
+    const res = editing ? await updateStaff(editing.id, { name, username, role }) : await addStaff({ name, username, role, password });
     if (!res.ok) {
       setServerError(res.error);
+      toast.error(res.error ?? "Account could not be saved.");
       return;
     }
     toast.success(editing ? `${name} updated` : `${name} added`, { description: editing ? undefined : "They can now sign in with the temporary password." });

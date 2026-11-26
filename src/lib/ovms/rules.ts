@@ -1,17 +1,32 @@
 import { subDays } from "date-fns";
+import { compareSync } from "bcryptjs";
 import type { Role, StaffUser, Visitor } from "./types";
 
 export type AuthResult = { ok: true; user: StaffUser } | { ok: false; error: string };
 
 export function authenticate(users: StaffUser[], username: string, password: string): AuthResult {
   const user = users.find((u) => u.username.toLowerCase() === username.trim().toLowerCase());
-  if (!user || user.password !== password) {
+  if (!user || !compareSync(password, user.password)) {
     return { ok: false, error: "Invalid username or password. Please try again." };
   }
   if (user.status !== "active") {
     return { ok: false, error: "This account is deactivated. Contact your administrator." };
   }
   return { ok: true, user };
+}
+
+export const IDLE_LIMIT_MS = 15 * 60 * 1000;
+export const IDLE_WARNING_MS = 60 * 1000;
+export const LOGIN_FAILURE_LIMIT = 5;
+export const LOGIN_LOCK_MS = 60 * 1000;
+
+export function nextLoginFailure(previous: { failures: number; lockedUntil: number }, now: number) {
+  const failures = (previous.lockedUntil && previous.lockedUntil <= now ? 0 : previous.failures) + 1;
+  return { failures, lockedUntil: failures >= LOGIN_FAILURE_LIMIT ? now + LOGIN_LOCK_MS : 0 };
+}
+
+export function sessionRemaining(lastActivityAt: string, now: number) {
+  return IDLE_LIMIT_MS - (now - new Date(lastActivityAt).getTime());
 }
 
 export function homeForRole(role: Role): "/admin" | "/dashboard" {

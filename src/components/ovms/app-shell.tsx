@@ -34,19 +34,33 @@ import { useOvms } from "@/lib/ovms/store";
 import type { StaffUser } from "@/lib/ovms/types";
 import { cn } from "@/lib/utils";
 
-export const IDLE_LIMIT_MS = 5 * 60 * 1000;
-export const IDLE_WARNING_MS = 60 * 1000;
+import { IDLE_LIMIT_MS, IDLE_WARNING_MS } from "@/lib/ovms/rules";
+export { IDLE_LIMIT_MS, IDLE_WARNING_MS } from "@/lib/ovms/rules";
 
-function useIdleTimer(onExpire: () => void) {
+function useIdleTimer(onExpire: () => Promise<void>) {
+  const { state, touchSession } = useOvms();
+  const session = state.session;
+  const touchRef = useRef(touchSession);
+  touchRef.current = touchSession;
+  const persisted = useRef(0);
   const last = useRef(Date.now());
   const warning = useRef(false);
   const expireRef = useRef(onExpire);
   expireRef.current = onExpire;
   const [remaining, setRemaining] = useState(IDLE_LIMIT_MS);
+  useEffect(() => {
+    if (session) last.current = new Date(session.lastActivityAt ?? session.startedAt).getTime();
+  }, [session?.lastActivityAt, session?.startedAt]);
 
   useEffect(() => {
     const bump = () => {
-      if (!warning.current) last.current = Date.now();
+      if (!warning.current) {
+        last.current = Date.now();
+        if (Date.now() - persisted.current > 1000) {
+          persisted.current = Date.now();
+          void touchRef.current().catch(() => undefined);
+        }
+      }
     };
     const events = ["mousemove", "mousedown", "keydown", "scroll", "touchstart"] as const;
     events.forEach((e) => window.addEventListener(e, bump, { passive: true }));
@@ -54,7 +68,7 @@ function useIdleTimer(onExpire: () => void) {
       const r = IDLE_LIMIT_MS - (Date.now() - last.current);
       warning.current = r <= IDLE_WARNING_MS;
       setRemaining(r);
-      if (r <= 0) expireRef.current();
+      if (r <= 0) void expireRef.current();
     }, 1000);
     return () => {
       events.forEach((e) => window.removeEventListener(e, bump));
@@ -66,6 +80,7 @@ function useIdleTimer(onExpire: () => void) {
     last.current = Date.now();
     warning.current = false;
     setRemaining(IDLE_LIMIT_MS);
+    void touchRef.current().catch(() => undefined);
   };
   return { remaining, reset };
 }
@@ -91,7 +106,7 @@ function AppSidebar({ user, onLogout }: { user: StaffUser; onLogout: () => void 
           {!collapsed && (
             <div className="min-w-0 leading-tight">
               <p className="truncate text-sm font-bold text-sidebar-accent-foreground">OVMS</p>
-              <p className="truncate text-[11px] text-sidebar-foreground/70">Office Visitor Management</p>
+              <p className="truncate text-[11px] text-sidebar-foreground/90" title="Administrative Services Office">Administrative Services Office</p>
             </div>
           )}
         </div>
@@ -99,7 +114,7 @@ function AppSidebar({ user, onLogout }: { user: StaffUser; onLogout: () => void 
 
       <SidebarContent className="px-1 pt-4">
         <SidebarGroup>
-          <SidebarGroupLabel className="text-[10px] uppercase tracking-[0.16em] text-sidebar-foreground/50">
+          <SidebarGroupLabel className="text-[10px] uppercase tracking-[0.16em] text-sidebar-foreground/85">
             {user.role === "admin" ? "Administration" : "Front desk"}
           </SidebarGroupLabel>
           <SidebarGroupContent>
@@ -133,9 +148,9 @@ function AppSidebar({ user, onLogout }: { user: StaffUser; onLogout: () => void 
       <SidebarFooter className="p-3">
         {!collapsed && (
           <div className="mb-2 rounded-xl bg-sidebar-accent p-3">
-            <p className="text-[10px] uppercase tracking-[0.14em] text-sidebar-foreground/60">Logged in as</p>
+            <p className="text-[10px] uppercase tracking-[0.14em] text-sidebar-foreground/85">Logged in as</p>
             <p className="mt-0.5 truncate text-sm font-semibold text-sidebar-accent-foreground">{user.name}</p>
-            <p className="truncate font-mono text-[11px] text-sidebar-foreground/70">@{user.username}</p>
+            <p className="truncate font-mono text-[11px] text-sidebar-foreground/90">@{user.username}</p>
           </div>
         )}
         <SidebarMenu>
@@ -161,8 +176,8 @@ export function AppShell({ user, children }: { user: StaffUser; children: ReactN
   const { remaining, reset } = useIdleTimer(expireSession);
   const warningOpen = remaining <= IDLE_WARNING_MS && remaining > 0;
 
-  const handleLogout = () => {
-    logout();
+  const handleLogout = async () => {
+    await logout();
     toast.success("You have been logged out.");
     navigate({ to: "/" });
   };
@@ -179,7 +194,7 @@ export function AppShell({ user, children }: { user: StaffUser; children: ReactN
               "hidden items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium md:flex",
               warningOpen ? "bg-warning-soft text-warning-foreground" : "bg-muted text-muted-foreground",
             )}
-            title="You are logged out automatically after 5 minutes of inactivity"
+            title="You are logged out automatically after 15 minutes of inactivity"
           >
             <Clock className="size-3.5" />
             Auto-logout in <span className="tabular font-mono">{mmss(remaining)}</span>

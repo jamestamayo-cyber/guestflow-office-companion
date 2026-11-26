@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { AlertCircle, Eye, EyeOff, Lock, ShieldCheck, User } from "lucide-react";
+import { AlertCircle, Eye, EyeOff, LoaderCircle, Lock, ShieldCheck, User } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -7,14 +7,15 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useOvms } from "@/lib/ovms/store";
 import { homeForRole } from "@/lib/ovms/rules";
+import { LoadError } from "@/components/ovms/data-state";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "Sign in — Office Visitor Management System" },
+      { title: "Sign in — Administrative Services Office" },
       { name: "description", content: "Secure sign-in for office staff and administrators to manage the digital visitor logbook." },
-      { property: "og:title", content: "Sign in — Office Visitor Management System" },
+      { property: "og:title", content: "Sign in — Administrative Services Office" },
       { property: "og:description", content: "Secure sign-in for office staff and administrators to manage the digital visitor logbook." },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
@@ -24,33 +25,44 @@ export const Route = createFileRoute("/")({
 });
 
 function LoginPage() {
-  const { login, hydrated, currentUser } = useOvms();
+  const { login, hydrated, currentUser, state, error: loadError } = useOvms();
   const navigate = useNavigate();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [show, setShow] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [touched, setTouched] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [clock, setClock] = useState(0);
+  useEffect(() => { setClock(Date.now()); const id = window.setInterval(() => setClock(Date.now()), 1000); return () => window.clearInterval(id); }, []);
+  const lockedSeconds = Math.max(0, Math.ceil(((state.loginAttempts?.lockedUntil ?? 0) - clock) / 1000));
 
   useEffect(() => {
     if (hydrated && currentUser) navigate({ to: homeForRole(currentUser.role) });
   }, [hydrated, currentUser, navigate]);
 
-  const submit = (e: FormEvent) => {
+  const submit = async (e: FormEvent) => {
     e.preventDefault();
+    if (saving || lockedSeconds) return;
     setTouched(true);
     if (!username.trim() || !password) {
       setError("Enter your username and password.");
+      toast.error("Enter your username and password.");
       return;
     }
-    const result = login(username, password);
+    setSaving(true);
+    try {
+    const result = await login(username, password);
     if (!result.ok) {
       setError(result.error);
+      toast.error(result.error);
       setPassword("");
       return;
     }
     toast.success(`Welcome back, ${result.user.name.split(" ")[0]}`);
     navigate({ to: homeForRole(result.user.role) });
+    } catch { setError("Sign-in could not be completed. Please retry."); }
+    finally { setSaving(false); }
   };
 
   return (
@@ -59,11 +71,11 @@ function LoginPage() {
         <div className="grid-dots pointer-events-none absolute inset-0" />
         <div className="relative flex items-center gap-3">
           <div className="flex size-11 items-center justify-center rounded-xl bg-neon text-neon-foreground shadow-neon">
-            <ShieldCheck className="size-6" />
+            <img src="/favicon.svg" alt="Administrative Services Office logo" className="size-9" />
           </div>
           <div className="leading-tight">
             <p className="font-bold">OVMS</p>
-            <p className="text-xs text-primary-foreground/70">Office Visitor Management System</p>
+            <p className="text-xs text-primary-foreground/70">Administrative Services Office</p>
           </div>
         </div>
         <div className="relative mt-auto max-w-lg">
@@ -71,10 +83,10 @@ function LoginPage() {
             Replacing the paper logbook
           </p>
           <h1 className="text-5xl font-extrabold leading-[1.05]">
-            Every visitor, <span className="text-neon">accounted for.</span>
+            Administrative <span className="text-neon">Services Office</span>
           </h1>
           <p className="mt-5 text-base text-primary-foreground/75">
-            Register visitors, record time-in and time-out, and keep a tamper-evident audit trail — all from the front
+            Register visitors, record time-in and time-out, and keep a visitor activity history — all from the front
             desk.
           </p>
           <div className="mt-10 grid grid-cols-3 gap-3">
@@ -100,10 +112,11 @@ function LoginPage() {
             </div>
             <div className="leading-tight">
               <p className="font-bold">OVMS</p>
-              <p className="text-xs text-muted-foreground">Office Visitor Management System</p>
+              <p className="text-xs text-muted-foreground">Administrative Services Office</p>
             </div>
           </div>
 
+          {loadError && <LoadError />}
           <h2 className="text-3xl font-bold">Sign in</h2>
           <p className="mt-1 text-sm text-muted-foreground">Use the account issued by your office administrator.</p>
 
@@ -126,7 +139,7 @@ function LoginPage() {
                     setUsername(e.target.value);
                     setError(null);
                   }}
-                  placeholder="e.g. msantos"
+                  placeholder="Office username"
                   className={cn("h-11 rounded-lg bg-card pl-9", touched && !username.trim() && "border-destructive")}
                 />
               </div>
@@ -147,18 +160,18 @@ function LoginPage() {
                   placeholder="••••••••"
                   className={cn("h-11 rounded-lg bg-card px-9", touched && !password && "border-destructive")}
                 />
-                <button
+                <Button variant="ghost" size="icon"
                   type="button"
                   onClick={() => setShow((s) => !s)}
                   className="absolute right-2 top-1/2 flex size-8 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
                   aria-label={show ? "Hide password" : "Show password"}
                 >
                   {show ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
-                </button>
+                </Button>
               </div>
             </div>
-            <Button type="submit" size="lg" className="w-full" disabled={!hydrated}>
-              Sign in
+            <Button type="submit" size="lg" className="w-full" disabled={!hydrated || saving || lockedSeconds > 0}>
+              {saving ? <><LoaderCircle className="animate-spin" /> Signing in…</> : lockedSeconds > 0 ? `Try again in ${lockedSeconds}s` : "Sign in"}
             </Button>
           </form>
 
@@ -167,13 +180,9 @@ function LoginPage() {
           </p>
 
           <div className="mt-8 rounded-xl border border-dashed bg-card p-4 text-xs">
-            <p className="mb-2 font-semibold text-foreground">Prototype accounts</p>
-            <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 font-mono text-muted-foreground">
-              <span className="font-sans font-medium text-foreground">Receptionist</span>
-              <span>msantos / Staff@2026</span>
-              <span className="font-sans font-medium text-foreground">Administrator</span>
-              <span>rvillanueva / Admin@2026</span>
-            </div>
+            <p className="mb-2 font-semibold text-foreground">Administrative Services Office</p>
+            <p className="text-muted-foreground">Visitor reception · Staff access</p>
+            <p className="mt-2 text-muted-foreground">Need access? Contact your office administrator.</p>
           </div>
         </div>
       </main>

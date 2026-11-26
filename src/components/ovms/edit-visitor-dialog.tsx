@@ -28,10 +28,10 @@ export function EditVisitorDialog({ visitor, onClose }: { visitor: Visitor | nul
   const errors = submitted ? validateVisitor(values) : {};
   const reasonError = submitted && reason.trim().length < 10 ? "Give a reason of at least 10 characters." : undefined;
 
-  const save = () => {
+  const save = async () => {
     setSubmitted(true);
-    if (Object.keys(validateVisitor(values)).length || reason.trim().length < 10) return;
-    editVisitor(visitor.id, { fullName: values.fullName, contact: values.contact, purpose: resolvePurpose(values), host: values.host }, reason);
+    if (Object.keys(validateVisitor(values)).length || reason.trim().length < 10) { toast.error("Complete the highlighted fields and provide a reason for edit."); return; }
+    await editVisitor(visitor.id, { fullName: values.fullName, contact: values.contact, purpose: resolvePurpose(values), host: values.host }, reason);
     toast.success(`Record ${visitor.id} updated`, { description: "The change was written to Activity Logs." });
     onClose();
   };
@@ -45,7 +45,7 @@ export function EditVisitorDialog({ visitor, onClose }: { visitor: Visitor | nul
         </DialogHeader>
         <AuditNotice>
           <strong>Changes are logged.</strong> Your name, the time, every field you change and your reason will be
-          recorded in Activity Logs and cannot be removed.
+          recorded in Activity Logs.
         </AuditNotice>
         <VisitorFields idPrefix="edit" values={values} errors={errors} onChange={(p) => setValues((v) => (v ? { ...v, ...p } : v))} />
         <div>

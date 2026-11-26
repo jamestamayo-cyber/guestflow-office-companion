@@ -1,3 +1,5 @@
+import { useTableData } from "@/components/ovms/table-tools";
+import { DataState } from "@/components/ovms/data-state";
 import { createFileRoute } from "@tanstack/react-router";
 import { EyeOff, FileSearch } from "lucide-react";
 import { useState } from "react";
@@ -21,6 +23,8 @@ function SearchRecords() {
   const masked = user.role !== "admin";
   const results = applyVisitorFilters(state.visitors.filter((v) => !v.archived), filters);
 
+  const table = useTableData(results, [{ label: "Date", value: (v) => -Date.parse(v.timeIn) }, { label: "Name", value: (v) => v.fullName }, { label: "Department", value: (v) => v.host }, { label: "Purpose", value: (v) => v.purpose }], (v) => `${v.id} ${v.fullName} ${v.host} ${v.purpose}`);
+
   return (
     <>
       <PageHeader eyebrow="Records" title="Search Visitor Records" description="Search by visitor name or visit date, then narrow with filters." />
@@ -36,7 +40,9 @@ function SearchRecords() {
             </span>
           )}
         </div>
-        {results.length === 0 ? (
+        <DataState>
+        {table.controls}
+        {table.total === 0 ? (
           <EmptyState icon={<FileSearch className="size-6" />} title="No matching records" description="Try a different name or clear the date filter." />
         ) : (
           <div className="overflow-x-auto">
@@ -53,7 +59,7 @@ function SearchRecords() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {results.map((v) => (
+                {table.rows.map((v) => (
                   <TableRow key={v.id}>
                     <TableCell className="pl-5">
                       <p className="font-semibold">{v.fullName}</p>
@@ -76,6 +82,7 @@ function SearchRecords() {
             </Table>
           </div>
         )}
+        </DataState>
       </Panel>
     </>
   );

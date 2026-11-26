@@ -1,3 +1,5 @@
+import { useTableData } from "@/components/ovms/table-tools";
+import { DataState } from "@/components/ovms/data-state";
 import { createFileRoute } from "@tanstack/react-router";
 import { Lock, ScrollText, X } from "lucide-react";
 import { isSameDay } from "date-fns";
@@ -29,9 +31,11 @@ function ActivityLogs() {
     .filter((l) => !date || isSameDay(new Date(l.timestamp), new Date(`${date}T00:00:00`)));
   const dirty = user !== "all" || action !== "all" || date;
 
+  const table = useTableData(rows, [{ label: "Timestamp", value: (l) => -Date.parse(l.timestamp) }, { label: "User", value: (l) => l.userName }, { label: "Action", value: (l) => l.action }], (l) => `${l.userName} ${l.action} ${l.recordId ?? ""} ${l.details ?? ""}`);
+
   return (
     <>
-      <PageHeader eyebrow="Administration" title="Activity Logs" description="A permanent, read-only record of every action taken in the system." />
+      <PageHeader eyebrow="Administration" title="Activity Logs" description="Read-only activity history saved on this device." />
       <Panel className="overflow-hidden">
         <div className="grid gap-3 p-4 sm:grid-cols-2 lg:grid-cols-[1fr_1fr_1fr_auto]">
           <Select value={user} onValueChange={setUser}>
@@ -55,7 +59,9 @@ function ActivityLogs() {
           <span><span className="font-semibold text-foreground">{rows.length}</span> entries</span>
           <span className="flex items-center gap-1.5"><Lock className="size-3.5" /> Logs cannot be edited or deleted</span>
         </div>
-        {rows.length === 0 ? (
+        <DataState>
+        {table.controls}
+        {table.total === 0 ? (
           <EmptyState icon={<ScrollText className="size-6" />} title="No log entries match" />
         ) : (
           <div className="overflow-x-auto">
@@ -70,7 +76,7 @@ function ActivityLogs() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {rows.map((l) => (
+                {table.rows.map((l) => (
                   <TableRow key={l.id}>
                     <TableCell className="pl-5 font-mono text-xs tabular">{fmtStamp(l.timestamp)}</TableCell>
                     <TableCell className="font-medium">{l.userName}</TableCell>
@@ -83,6 +89,7 @@ function ActivityLogs() {
             </Table>
           </div>
         )}
+        </DataState>
       </Panel>
     </>
   );

@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { CalendarDays, Clock, Info, Lock, Save } from "lucide-react";
+import { CalendarDays, Clock, Info, LoaderCircle, Lock, Save } from "lucide-react";
 import { format } from "date-fns";
 import { useEffect, useState, type FormEvent } from "react";
 import { toast } from "sonner";
@@ -23,6 +23,7 @@ function RegisterVisitor() {
   const [values, setValues] = useState<VisitorInput>(emptyVisitorInput);
   const [touched, setTouched] = useState<Partial<Record<keyof VisitorInput, boolean>>>({});
   const [submitted, setSubmitted] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [now, setNow] = useState(() => new Date());
 
   useEffect(() => {
@@ -35,14 +36,17 @@ function RegisterVisitor() {
     Object.entries(allErrors).filter(([k]) => submitted || touched[k as keyof VisitorInput]),
   );
 
-  const submit = (e: FormEvent) => {
+  const submit = async (e: FormEvent) => {
     e.preventDefault();
+    if (saving) return;
     setSubmitted(true);
     if (Object.keys(allErrors).length) {
       toast.error("Please fix the highlighted fields.");
       return;
     }
-    const v = registerVisitor({ fullName: values.fullName, contact: values.contact, purpose: resolvePurpose(values), host: values.host });
+    setSaving(true);
+    try {
+    const v = await registerVisitor({ fullName: values.fullName, contact: values.contact, purpose: resolvePurpose(values), host: values.host });
     toast.success(`${v.fullName} timed in at ${format(new Date(v.timeIn), "h:mm a")}`, {
       description: `Record ${v.id} saved.`,
       action: { label: "View list", onClick: () => navigate({ to: "/current-visitors" }) },
@@ -50,6 +54,8 @@ function RegisterVisitor() {
     setValues(emptyVisitorInput);
     setTouched({});
     setSubmitted(false);
+    } catch { /* Service displays the error and keeps entered values. */ }
+    finally { setSaving(false); }
   };
 
   return (
@@ -86,13 +92,13 @@ function RegisterVisitor() {
                 </div>
               </div>
             </div>
-            <Button type="submit" size="lg" className="mt-6 w-full">
-              <Save /> Save &amp; Time-In
+            <Button type="submit" size="lg" className="mt-6 w-full" disabled={saving}>
+              {saving ? <LoaderCircle className="animate-spin" /> : <Save />} {saving ? "Saving…" : "Save & Time-In"}
             </Button>
           </Panel>
           <div className="flex gap-2.5 rounded-xl bg-secondary px-4 py-3 text-xs text-secondary-foreground">
             <Info className="mt-0.5 size-4 shrink-0" />
-            Contact numbers are stored securely and shown masked in search results.
+            Contact numbers are saved on this device and partially hidden for reception staff.
           </div>
         </div>
       </form>

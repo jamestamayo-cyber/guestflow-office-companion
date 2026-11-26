@@ -1,3 +1,5 @@
+import { useTableData } from "@/components/ovms/table-tools";
+import { DataState } from "@/components/ovms/data-state";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { DoorOpen, LogOut, UserPlus } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -8,7 +10,7 @@ import { EmptyState, PageHeader, Panel } from "@/components/ovms/page-header";
 import { VisitorStatusBadge } from "@/components/ovms/badges";
 import { ConfirmDialog } from "@/components/ovms/confirm-dialog";
 import { useOvms } from "@/lib/ovms/store";
-import { fmtDuration, fmtTime, initials } from "@/lib/ovms/format";
+import { fmtTimeInside, fmtTime, initials } from "@/lib/ovms/format";
 import { pageHead } from "@/lib/ovms/head";
 import type { Visitor } from "@/lib/ovms/types";
 import { format } from "date-fns";
@@ -23,7 +25,7 @@ function CurrentVisitors() {
   const [target, setTarget] = useState<Visitor | null>(null);
   const [, tick] = useState(0);
   useEffect(() => {
-    const id = window.setInterval(() => tick((n) => n + 1), 30000);
+    const id = window.setInterval(() => tick((n) => n + 1), 1000);
     return () => window.clearInterval(id);
   }, []);
 
@@ -31,12 +33,14 @@ function CurrentVisitors() {
     .filter((v) => !v.archived && !v.timeOut)
     .sort((a, b) => a.timeIn.localeCompare(b.timeIn));
 
-  const confirm = () => {
+  const confirm = async () => {
     if (!target) return;
-    checkOut(target.id);
+    await checkOut(target.id);
     toast.success(`${target.fullName} timed out at ${format(new Date(), "h:mm a")}`);
     setTarget(null);
   };
+
+  const table = useTableData(inside, [{ label: "Date", value: (v) => -Date.parse(v.timeIn) }, { label: "Name", value: (v) => v.fullName }, { label: "Department", value: (v) => v.host }, { label: "Purpose", value: (v) => v.purpose }], (v) => `${v.id} ${v.fullName} ${v.host} ${v.purpose}`);
 
   return (
     <>
@@ -53,7 +57,9 @@ function CurrentVisitors() {
         }
       />
       <Panel className="overflow-hidden">
-        {inside.length === 0 ? (
+        <DataState>
+        {table.controls}
+        {table.total === 0 ? (
           <EmptyState icon={<DoorOpen className="size-6" />} title="No one is inside" description="Visitors appear here as soon as they're registered." />
         ) : (
           <div className="overflow-x-auto">
@@ -69,7 +75,7 @@ function CurrentVisitors() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {inside.map((v) => (
+                {table.rows.map((v) => (
                   <TableRow key={v.id}>
                     <TableCell className="pl-5">
                       <div className="flex items-center gap-3">
@@ -86,7 +92,7 @@ function CurrentVisitors() {
                     <TableCell>{v.host}</TableCell>
                     <TableCell>
                       <p className="tabular font-medium">{fmtTime(v.timeIn)}</p>
-                      <p className="text-xs text-muted-foreground">{fmtDuration(v.timeIn, null)} inside</p>
+                      <p className="text-xs text-muted-foreground">{fmtTimeInside(v.timeIn)} inside</p>
                     </TableCell>
                     <TableCell>
                       <VisitorStatusBadge visitor={v} />
@@ -102,6 +108,7 @@ function CurrentVisitors() {
             </Table>
           </div>
         )}
+        </DataState>
       </Panel>
 
       <ConfirmDialog

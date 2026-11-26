@@ -1,5 +1,5 @@
 export function pageHead(title: string, description: string) {
-  const full = `${title} — OVMS`;
+  const full = `${title} — Administrative Services Office`;
   return {
     meta: [
       { title: full },

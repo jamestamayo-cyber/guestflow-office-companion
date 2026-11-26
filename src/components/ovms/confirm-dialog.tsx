@@ -1,4 +1,5 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
+import { LoaderCircle } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -26,12 +27,13 @@ export function ConfirmDialog({
   title: string;
   description?: ReactNode;
   confirmLabel: string;
-  onConfirm: () => void;
+  onConfirm: () => void | Promise<void>;
   tone?: "default" | "danger";
   children?: ReactNode;
 }) {
+  const [saving, setSaving] = useState(false);
   return (
-    <AlertDialog open={open} onOpenChange={onOpenChange}>
+    <AlertDialog open={open} onOpenChange={(value) => !saving && onOpenChange(value)}>
       <AlertDialogContent className="rounded-2xl">
         <AlertDialogHeader>
           <AlertDialogTitle>{title}</AlertDialogTitle>
@@ -39,12 +41,18 @@ export function ConfirmDialog({
         </AlertDialogHeader>
         {children}
         <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogCancel disabled={saving}>Cancel</AlertDialogCancel>
           <AlertDialogAction
             className={buttonVariants({ variant: tone === "danger" ? "destructive" : "default" })}
-            onClick={onConfirm}
+            disabled={saving}
+            onClick={async (event) => {
+              event.preventDefault();
+              setSaving(true);
+              try { await onConfirm(); } catch { /* Service reports the error; leave confirmation open for retry. */ }
+              finally { setSaving(false); }
+            }}
           >
-            {confirmLabel}
+            {saving && <LoaderCircle className="mr-2 size-4 animate-spin" />}{saving ? "Saving…" : confirmLabel}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

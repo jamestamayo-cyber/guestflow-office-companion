@@ -49,3 +49,8 @@ export function initials(name: string) {
     .map((p) => p[0]?.toUpperCase())
     .join("");
 }
+
+export function fmtTimeInside(timeIn: string, now = new Date()) {
+  const seconds = Math.max(0, Math.floor((now.getTime() - new Date(timeIn).getTime()) / 1000));
+  return `${Math.floor(seconds / 3600)}h ${String(Math.floor(seconds / 60) % 60).padStart(2, "0")}m ${String(seconds % 60).padStart(2, "0")}s`;
+}

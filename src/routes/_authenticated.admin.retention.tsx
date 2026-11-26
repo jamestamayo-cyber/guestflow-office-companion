@@ -1,3 +1,5 @@
+import { useTableData } from "@/components/ovms/table-tools";
+import { DataState } from "@/components/ovms/data-state";
 import { createFileRoute } from "@tanstack/react-router";
 import { Archive, ArchiveRestore, Info, RotateCcw } from "lucide-react";
 import { useState } from "react";
@@ -35,18 +37,20 @@ function Retention() {
   const sorted = [...list].sort((a, b) => a.timeIn.localeCompare(b.timeIn));
   const allSelected = sorted.length > 0 && sorted.every((v) => selected.includes(v.id));
 
-  const run = () => {
+  const run = async () => {
     if (!confirm) return;
     if (tab === "eligible") {
-      archiveVisitors(confirm);
+      await archiveVisitors(confirm);
       toast.success(`${confirm.length} record${confirm.length > 1 ? "s" : ""} archived`);
     } else {
-      restoreVisitors(confirm);
+      await restoreVisitors(confirm);
       toast.success(`${confirm.length} record${confirm.length > 1 ? "s" : ""} restored`);
     }
     setSelected([]);
     setConfirm(null);
   };
+
+  const table = useTableData(sorted, [{ label: "Date", value: (v) => -Date.parse(v.timeIn) }, { label: "Name", value: (v) => v.fullName }, { label: "Department", value: (v) => v.host }, { label: "Purpose", value: (v) => v.purpose }], (v) => `${v.id} ${v.fullName} ${v.host} ${v.purpose}`);
 
   return (
     <>
@@ -79,7 +83,9 @@ function Retention() {
             {tab === "eligible" ? <><Archive /> Archive selected ({selected.length})</> : <><RotateCcw /> Restore selected ({selected.length})</>}
           </Button>
         </div>
-        {sorted.length === 0 ? (
+        <DataState>
+        {table.controls}
+        {table.total === 0 ? (
           <EmptyState icon={<ArchiveRestore className="size-6" />} title={tab === "eligible" ? "Nothing to archive" : "No archived records"} description={tab === "eligible" ? "No checked-out records are older than this period." : "Archived records will appear here."} />
         ) : (
           <div className="overflow-x-auto">
@@ -97,7 +103,7 @@ function Retention() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {sorted.map((v) => (
+                {table.rows.map((v) => (
                   <TableRow key={v.id} data-state={selected.includes(v.id) ? "selected" : undefined}>
                     <TableCell className="pl-5">
                       <Checkbox
@@ -126,6 +132,7 @@ function Retention() {
             </Table>
           </div>
         )}
+        </DataState>
       </Panel>
 
       <ConfirmDialog

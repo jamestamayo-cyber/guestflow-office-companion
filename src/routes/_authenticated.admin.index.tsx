@@ -1,3 +1,4 @@
+import { DataState } from "@/components/ovms/data-state";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { ArrowRight, CalendarCheck, DoorOpen, Users } from "lucide-react";
 import { eachDayOfInterval, format, formatDistanceToNow, isSameDay, isToday, subDays } from "date-fns";
@@ -43,6 +44,7 @@ function AdminDashboard() {
             <Button asChild variant="ghost" size="sm"><Link to="/admin/reports">Reports <ArrowRight /></Link></Button>
           } />
           <div className="p-4">
+            <DataState chart empty={!days.some((d) => d.visits > 0)}>
             <ChartContainer config={chartConfig} className="h-[240px] w-full">
               <BarChart data={days} margin={{ left: -20, right: 8, top: 8 }}>
                 <CartesianGrid vertical={false} strokeDasharray="3 3" />
@@ -52,6 +54,7 @@ function AdminDashboard() {
                 <Bar dataKey="visits" fill="var(--color-visits)" radius={[8, 8, 0, 0]} maxBarSize={44} />
               </BarChart>
             </ChartContainer>
+            </DataState>
           </div>
         </Panel>
 
@@ -59,6 +62,7 @@ function AdminDashboard() {
           <PanelHeader title="Recent activity" actions={
             <Button asChild variant="ghost" size="sm"><Link to="/admin/logs">All logs <ArrowRight /></Link></Button>
           } />
+          <DataState>
           <ul className="divide-y">
             {state.logs.slice(0, 7).map((l) => (
               <li key={l.id} className="flex items-start gap-3 px-5 py-3">
@@ -81,7 +85,9 @@ function AdminDashboard() {
                 </span>
               </li>
             ))}
+            {state.logs.length === 0 && <li className="px-5 py-10 text-center text-sm text-muted-foreground">No activity recorded yet.</li>}
           </ul>
+          </DataState>
         </Panel>
       </div>
     </>

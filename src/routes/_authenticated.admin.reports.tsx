@@ -1,3 +1,5 @@
+import { useTableData } from "@/components/ovms/table-tools";
+import { DataState } from "@/components/ovms/data-state";
 import { createFileRoute } from "@tanstack/react-router";
 import { CalendarRange, Clock, FileDown, FileText, TrendingUp, Users } from "lucide-react";
 import {
@@ -30,6 +32,7 @@ import { PageHeader, Panel, PanelHeader } from "@/components/ovms/page-header";
 import { StatCard } from "@/components/ovms/stat-card";
 import { useOvms } from "@/lib/ovms/store";
 import { fmtDate, fmtDuration, fmtTime } from "@/lib/ovms/format";
+import { createCsv, createPdf, downloadBlob } from "@/services/reports";
 import { pageHead } from "@/lib/ovms/head";
 
 export const Route = createFileRoute("/_authenticated/admin/reports")({
@@ -74,7 +77,7 @@ function Reports() {
 
   const done = rows.filter((v) => v.timeOut);
   const avg = done.length
-    ? Math.round(done.reduce((s, v) => s + differenceInMinutes(new Date(v.timeOut!), new Date(v.timeIn)), 0) / done.length)
+    ? Math.round(done.reduce((s, v) => s + (v.timeOut ? differenceInMinutes(new Date(v.timeOut), new Date(v.timeIn)) : 0), 0) / done.length)
     : 0;
   const purposeCounts = rows.reduce<Record<string, number>>((acc, v) => {
     const k = v.purpose.startsWith("Other") ? "Other" : v.purpose;
@@ -85,28 +88,25 @@ function Reports() {
   const busiest = [...chart].sort((a, b) => b.visits - a.visits)[0];
   const label = `${period.charAt(0).toUpperCase()}${period.slice(1)} report, ${format(from, "MMM d, yyyy")} – ${format(to, "MMM d, yyyy")}`;
 
-  const exportCsv = () => {
-    const header = ["Record ID", "Visitor", "Purpose", "Host", "Time-in", "Time-out", "Duration"];
-    const lines = rows.map((v) =>
-      [v.id, v.fullName, v.purpose, v.host, format(new Date(v.timeIn), "yyyy-MM-dd HH:mm"), v.timeOut ? format(new Date(v.timeOut), "yyyy-MM-dd HH:mm") : "", fmtDuration(v.timeIn, v.timeOut)]
-        .map((c) => `"${String(c).replace(/"/g, '""')}"`)
-        .join(","),
-    );
-    const blob = new Blob([[header.join(","), ...lines].join("\n")], { type: "text/csv" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = `visitor-report-${period}-${format(from, "yyyyMMdd")}-${format(to, "yyyyMMdd")}.csv`;
-    a.click();
-    URL.revokeObjectURL(a.href);
-    logExport(`${label} (CSV)`);
-    toast.success("CSV exported", { description: `${rows.length} records downloaded.` });
+  const filename = `visitor-report-${period}-${format(from, "yyyyMMdd")}-${format(to, "yyyyMMdd")}`;
+  const exportCsv = async () => {
+    try {
+      const blob = new Blob([createCsv(rows)], { type: "text/csv;charset=utf-8" });
+      await logExport(`${label} (CSV)`);
+      downloadBlob(blob, `${filename}.csv`);
+      toast.success("CSV exported", { description: `${rows.length} records downloaded.` });
+    } catch { toast.error("CSV could not be exported. Please retry."); }
+  };
+  const exportPdf = async () => {
+    try {
+      const blob = await createPdf(rows, label);
+      await logExport(`${label} (PDF)`);
+      downloadBlob(blob, `${filename}.pdf`);
+      toast.success("PDF exported", { description: `${rows.length} records downloaded.` });
+    } catch { toast.error("PDF could not be exported. Please retry."); }
   };
 
-  const exportPdf = () => {
-    logExport(`${label} (PDF)`);
-    toast.success("Preparing PDF", { description: "Choose “Save as PDF” in the print dialog." });
-    window.setTimeout(() => window.print(), 300);
-  };
+  const table = useTableData(rows, [{ label: "Date", value: (v) => -Date.parse(v.timeIn) }, { label: "Name", value: (v) => v.fullName }, { label: "Department", value: (v) => v.host }, { label: "Purpose", value: (v) => v.purpose }], (v) => `${v.id} ${v.fullName} ${v.host} ${v.purpose}`);
 
   return (
     <>
@@ -116,8 +116,8 @@ function Reports() {
         description={label}
         actions={
           <div data-print-hide className="flex gap-2">
-            <Button variant="outline" onClick={exportCsv}><FileDown /> Export CSV</Button>
-            <Button onClick={exportPdf}><FileText /> Export PDF</Button>
+            <Button variant="outline" onClick={exportCsv} disabled={!rows.length}><FileDown /> Export CSV</Button>
+            <Button onClick={exportPdf} disabled={!rows.length}><FileText /> Export PDF</Button>
           </div>
         }
       />
@@ -159,6 +159,7 @@ function Reports() {
       <Panel className="mt-6">
         <PanelHeader title="Visits over time" description={`Grouped ${period === "daily" ? "by day" : period === "weekly" ? "by week" : "by month"}`} />
         <div className="p-4">
+          <DataState chart empty={!rows.length}>
           <ChartContainer config={chartConfig} className="h-[260px] w-full">
             <BarChart data={chart} margin={{ left: -20, right: 8, top: 8 }}>
               <CartesianGrid vertical={false} strokeDasharray="3 3" />
@@ -168,11 +169,14 @@ function Reports() {
               <Bar dataKey="visits" fill="var(--color-visits)" radius={[6, 6, 0, 0]} maxBarSize={40} />
             </BarChart>
           </ChartContainer>
+          </DataState>
         </div>
       </Panel>
 
       <Panel className="mt-6 overflow-hidden">
         <PanelHeader title="Report preview" description={`${rows.length} records`} />
+        <DataState>
+        {table.controls}
         <div className="overflow-x-auto">
           <Table className="min-w-[820px]">
             <TableHeader>
@@ -187,7 +191,7 @@ function Reports() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {rows.map((v) => (
+              {table.rows.map((v) => (
                 <TableRow key={v.id}>
                   <TableCell className="pl-5 tabular">{fmtDate(v.timeIn)}</TableCell>
                   <TableCell className="font-semibold">{v.fullName}</TableCell>
@@ -198,7 +202,7 @@ function Reports() {
                   <TableCell className="pr-5 tabular">{fmtDuration(v.timeIn, v.timeOut)}</TableCell>
                 </TableRow>
               ))}
-              {rows.length === 0 && (
+              {table.total === 0 && (
                 <TableRow>
                   <TableCell colSpan={7} className="py-10 text-center text-muted-foreground">No visits in this range.</TableCell>
                 </TableRow>
@@ -206,6 +210,7 @@ function Reports() {
             </TableBody>
           </Table>
         </div>
+        </DataState>
       </Panel>
     </>
   );
