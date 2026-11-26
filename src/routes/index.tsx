@@ -25,7 +25,7 @@ export const Route = createFileRoute("/")({
 });
 
 function LoginPage() {
-  const { login, hydrated, currentUser, state, error: loadError } = useOvms();
+  const { login, hydrated, currentUser, error: loadError } = useOvms();
   const navigate = useNavigate();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -33,9 +33,6 @@ function LoginPage() {
   const [error, setError] = useState<string | null>(null);
   const [touched, setTouched] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [clock, setClock] = useState(0);
-  useEffect(() => { setClock(Date.now()); const id = window.setInterval(() => setClock(Date.now()), 1000); return () => window.clearInterval(id); }, []);
-  const lockedSeconds = Math.max(0, Math.ceil(((state.loginAttempts?.lockedUntil ?? 0) - clock) / 1000));
 
   useEffect(() => {
     if (hydrated && currentUser) navigate({ to: homeForRole(currentUser.role) });
@@ -43,7 +40,7 @@ function LoginPage() {
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    if (saving || lockedSeconds) return;
+    if (saving) return;
     setTouched(true);
     if (!username.trim() || !password) {
       setError("Enter your username and password.");
@@ -170,8 +167,8 @@ function LoginPage() {
                 </Button>
               </div>
             </div>
-            <Button type="submit" size="lg" className="w-full" disabled={!hydrated || saving || lockedSeconds > 0}>
-              {saving ? <><LoaderCircle className="animate-spin" /> Signing in…</> : lockedSeconds > 0 ? `Try again in ${lockedSeconds}s` : "Sign in"}
+            <Button type="submit" size="lg" className="w-full" disabled={saving}>
+              {saving ? <><LoaderCircle className="animate-spin" /> Signing in…</> : "Sign in"}
             </Button>
           </form>
 
