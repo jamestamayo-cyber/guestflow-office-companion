@@ -218,6 +218,75 @@ describe("Supabase OVMS service", () => {
     expect(mockSupabase.from).not.toHaveBeenCalled();
   });
 
+  it("restores cached profiles and permits password-verified offline sign-in", async () => {
+    const online = await officeService.login("admin", "offline-passphrase");
+    expect(online.result.ok).toBe(true);
+    expect(localStorage.getItem("guestflow_cached_user")).toEqual(
+      expect.stringContaining('"role":"admin"'),
+    );
+    const credentials = localStorage.getItem("guestflow_cached_credentials");
+    expect(credentials).toContain('"passwordHash"');
+    expect(credentials).not.toContain("offline-passphrase");
+
+    const cachedState = JSON.parse(localStorage.getItem("guestflow_cached_state") ?? "{}");
+    cachedState.users[0].role = "receptionist";
+    cachedState.session = null;
+    localStorage.setItem("guestflow_cached_state", JSON.stringify(cachedState));
+    const restored = officeService.getInitialCache();
+    expect(restored.state.session?.userId).toBe("staff-admin");
+    expect(restored.state.users[0]).toMatchObject({
+      email: "admin@guestflow.local",
+      name: "Ramon Villanueva",
+      role: "admin",
+    });
+    await officeService.logout();
+    expect(JSON.parse(localStorage.getItem("guestflow_cached_state") ?? "{}").visitors).toHaveLength(1);
+
+    Object.defineProperty(navigator, "onLine", { configurable: true, value: false });
+    const rejected = await officeService.login("admin", "wrong-passphrase");
+    expect(rejected.result.ok).toBe(false);
+    const offline = await officeService.login("admin", "offline-passphrase");
+    expect(offline.result).toMatchObject({ ok: true, user: { id: "staff-admin", role: "admin" } });
+    expect(offline.state.session?.userId).toBe("staff-admin");
+    expect(officeService.getPendingSyncCount()).toBe(1);
+  });
+
+  it("does not restore an offline session after its idle timeout", async () => {
+    await officeService.login("admin", "offline-passphrase");
+    const cachedState = JSON.parse(localStorage.getItem("guestflow_cached_state") ?? "{}");
+    const expiredAt = new Date(Date.now() - 16 * 60 * 1000).toISOString();
+    cachedState.session.lastActivityAt = expiredAt;
+    cachedState.session.startedAt = expiredAt;
+    localStorage.setItem("guestflow_cached_state", JSON.stringify(cachedState));
+
+    const restored = officeService.getInitialCache();
+
+    expect(restored.state.session).toBeNull();
+    expect(JSON.parse(localStorage.getItem("guestflow_cached_state") ?? "{}").session).toBeNull();
+  });
+
+  it("migrates the previous offline queue key without dropping queued data", () => {
+    localStorage.setItem("guestflow_sync_queue", "[]");
+    localStorage.setItem(
+      "guestflow_offline_mutations",
+      JSON.stringify([{ id: "legacy-mutation", timestamp: now }]),
+    );
+
+    expect(officeService.getPendingSyncCount()).toBe(1);
+    expect(localStorage.getItem("guestflow_sync_queue")).toContain("legacy-mutation");
+    expect(localStorage.getItem("guestflow_offline_mutations")).toBeNull();
+  });
+
+  it("serves cached records when the Supabase session lookup loses connectivity", async () => {
+    const cached = await officeService.load();
+    mockSupabase.auth.getSession.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+
+    await expect(officeService.load()).resolves.toMatchObject({
+      visitors: cached.visitors,
+      logs: cached.logs,
+    });
+  });
+
   it("registers and checks out visitors with activity logs", async () => {
     const registered = await officeService.registerVisitor(visitorInput);
     expect(registered.result).toMatchObject({
@@ -324,6 +393,10 @@ describe("Supabase OVMS service", () => {
     expect(tables.visitors.find((row) => row.id === registered.result.id)?.time_out).toBeTruthy();
     expect(tables.activity_logs).toContainEqual(
       expect.objectContaining({ action: "Registered visitor", record_id: registered.result.id }),
+    );
+    const localAfterSync = JSON.parse(localStorage.getItem("guestflow_cached_state") ?? "{}");
+    expect(localAfterSync.visitors).toContainEqual(
+      expect.objectContaining({ id: registered.result.id, fullName: visitorInput.fullName }),
     );
     expect(tables.activity_logs).toContainEqual(
       expect.objectContaining({ action: "Checked-out visitor", record_id: registered.result.id }),

@@ -151,12 +151,6 @@ function RootComponent() {
       try {
         await navigator.serviceWorker.register("/sw.js", { scope: "/" });
         await navigator.serviceWorker.ready;
-
-        // Warm up the HTML cache immediately so cold launches work in Airplane mode
-        if (navigator.onLine && typeof caches !== "undefined") {
-          const cache = await caches.open("guestflow-html-cache");
-          await cache.add(new Request("/", { credentials: "same-origin" }));
-        }
       } catch (err) {
         console.warn("ServiceWorker registration failed:", err);
       }

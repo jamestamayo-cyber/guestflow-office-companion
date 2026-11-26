@@ -29,25 +29,39 @@ interface Store {
   logExport: (details: string) => Promise<void>;
 }
 const Ctx = createContext<Store | null>(null);
-const emptyState: AppState = { users: [], visitors: [], logs: [], session: null, seq: { visitor: 0, log: 0, user: 0 } };
 export function OvmsProvider({ children }: { children: ReactNode }) {
-  const [state, setState] = useState<AppState>(emptyState);
-  const [hydrated, setHydrated] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [initialCache] = useState(() => officeService.getInitialCache());
+  const [state, setState] = useState<AppState>(initialCache.state);
+  const [hydrated, setHydrated] = useState(initialCache.cached);
+  const [loading, setLoading] = useState(!initialCache.cached);
   const [error, setError] = useState<string | null>(null);
   const [sessionExpired, setSessionExpired] = useState(false);
   const expiryRunning = useRef(false);
   const retry = useCallback(async () => {
-    setLoading(true); setError(null);
+    if (!initialCache.cached) setLoading(true);
+    setError(null);
     try { setState(await officeService.load()); setHydrated(true); }
-    catch (e) { const message = e instanceof Error ? e.message : "Records could not be loaded. Please retry."; setError(message); toast.error(message); }
+    catch (e) {
+      const message = e instanceof Error ? e.message : "Records could not be loaded. Please retry.";
+      setError(message);
+      setHydrated(true);
+      toast.error(message);
+    }
     finally { setLoading(false); }
-  }, []);
+  }, [initialCache.cached]);
   useEffect(() => {
     void retry();
-    const sync = () => { void retry(); };
-    window.addEventListener("storage", sync);
-    return () => window.removeEventListener("storage", sync);
+    const refresh = () => { void retry(); };
+    const timer = window.setInterval(() => {
+      if (navigator.onLine) void retry();
+    }, 30_000);
+    window.addEventListener("online", refresh);
+    window.addEventListener("storage", refresh);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("online", refresh);
+      window.removeEventListener("storage", refresh);
+    };
   }, [retry]);
   const run = useCallback(async <T,>(action: () => Promise<{ state: AppState; result: T }>) => {
     try {
@@ -66,7 +80,26 @@ export function OvmsProvider({ children }: { children: ReactNode }) {
   const store = useMemo<Store>(() => ({
     hydrated, loading, error, retry, state, sessionExpired,
     currentUser: state.users.find((u) => u.id === state.session?.userId && u.status === "active") ?? null,
-    login: async (username, password) => { const result = await run(() => officeService.login(username, password)); if (result.ok) { setSessionExpired(false); expiryRunning.current = false; } return result; },
+    login: async (username, password) => {
+      const result = await run(() => officeService.login(username, password));
+      if (result.ok) {
+        setSessionExpired(false);
+        expiryRunning.current = false;
+        if (
+          typeof navigator !== "undefined" &&
+          navigator.onLine &&
+          officeService.getPendingSyncCount() > 0
+        ) {
+          void officeService
+            .syncOfflineQueue()
+            .then(async () => setState(await officeService.load()))
+            .catch((error: unknown) => {
+              console.error("Queued offline changes could not be synced after sign-in.", error);
+            });
+        }
+      }
+      return result;
+    },
     logout: () => run(() => officeService.logout()),
     expireSession: async () => { if (expiryRunning.current) return; expiryRunning.current = true; try { await run(() => officeService.logout(true)); setSessionExpired(true); } catch { expiryRunning.current = false; } },
     touchSession: () => run(() => officeService.touchSession()),

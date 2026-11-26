@@ -3,6 +3,7 @@ export type AccountStatus = "active" | "inactive";
 
 export interface StaffUser {
   id: string;
+  email?: string;
   name: string;
   username: string;
   /** Salted bcrypt hash; never a plaintext password. */

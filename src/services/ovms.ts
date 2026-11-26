@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { compareSync, hashSync } from "bcryptjs";
 import { supabase } from "@/integrations/supabase/client";
 import { sessionRemaining, type AuthResult } from "@/lib/ovms/rules";
 import { toLocalPhone } from "@/lib/ovms/format";
@@ -71,12 +72,29 @@ let queue: Promise<unknown> = Promise.resolve();
 export type VisitorFields = Pick<Visitor, "fullName" | "contact" | "purpose" | "host">;
 export type StaffResult = { ok: boolean; error?: string };
 
-const QUEUE_KEY = "guestflow_offline_mutations";
+const QUEUE_KEY = "guestflow_sync_queue";
+const LEGACY_QUEUE_KEY = "guestflow_offline_mutations";
 const STATE_KEY = "guestflow_cached_state";
+const CACHED_USER_KEY = "guestflow_cached_user";
+const CACHED_CREDENTIALS_KEY = "guestflow_cached_credentials";
 const QUEUE_CHANGE_EVENT = "guestflow:offline-queue-change";
+const SYNC_STATE_EVENT = "guestflow:sync-state";
+type CachedAuthUser = { id: string; email: string; name: string; role: "admin" | "user" };
+type CachedCredentials = {
+  userId: string;
+  username: string;
+  passwordHash: string;
+  profile: CachedAuthUser;
+};
 type QueueActor = Pick<StaffUser, "id" | "name" | "role">;
 type QueueLog = Omit<ActivityRow, "changes"> & { changes: ActivityLog["changes"] | null };
 type QueuedMutation =
+  | {
+      id: string;
+      type: "INSERT_ACTIVITY_LOG";
+      timestamp: string;
+      payload: { log: QueueLog };
+    }
   | {
       id: string;
       type: "REGISTER_VISITOR";
@@ -123,17 +141,49 @@ function isBrowserOnline(): boolean {
   return typeof navigator === "undefined" || navigator.onLine;
 }
 
+function withTimeout<T>(promise: PromiseLike<T>, message: string, timeoutMs = 8000): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error(message)), timeoutMs);
+    Promise.resolve(promise).then(
+      (value) => {
+        clearTimeout(timeout);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timeout);
+        reject(error);
+      },
+    );
+  });
+}
+
 function dispatchQueueChange(): void {
   if (typeof window !== "undefined") window.dispatchEvent(new Event(QUEUE_CHANGE_EVENT));
+}
+
+function dispatchSyncState(status: "syncing" | "synced" | "error"): void {
+  if (typeof window !== "undefined")
+    window.dispatchEvent(new CustomEvent(SYNC_STATE_EVENT, { detail: status }));
 }
 
 function readOfflineQueue(): QueuedMutation[] {
   if (typeof localStorage === "undefined") return [];
   const stored = localStorage.getItem(QUEUE_KEY);
-  if (!stored) return [];
-  const parsed: unknown = JSON.parse(stored);
-  if (!Array.isArray(parsed)) throw new Error("The offline sync queue is corrupted.");
-  return parsed as QueuedMutation[];
+  const legacy = localStorage.getItem(LEGACY_QUEUE_KEY);
+  const currentItems: unknown = stored ? JSON.parse(stored) : [];
+  const legacyItems: unknown = legacy ? JSON.parse(legacy) : [];
+  if (!Array.isArray(currentItems) || !Array.isArray(legacyItems))
+    throw new Error("The offline sync queue is corrupted.");
+  if (legacy) {
+    const merged = [...(legacyItems as QueuedMutation[]), ...(currentItems as QueuedMutation[])];
+    const unique = [...new Map(merged.map((item) => [item.id, item])).values()].sort((a, b) =>
+      a.timestamp.localeCompare(b.timestamp),
+    );
+    localStorage.setItem(QUEUE_KEY, JSON.stringify(unique));
+    localStorage.removeItem(LEGACY_QUEUE_KEY);
+    return unique;
+  }
+  return currentItems as QueuedMutation[];
 }
 
 function writeOfflineQueue(items: QueuedMutation[]): void {
@@ -154,8 +204,93 @@ function readCachedState(): AppState | null {
   return JSON.parse(stored) as AppState;
 }
 
+function readCachedUser(): CachedAuthUser | null {
+  if (typeof localStorage === "undefined") return null;
+  const stored = localStorage.getItem(CACHED_USER_KEY);
+  if (!stored) return null;
+  const parsed: unknown = JSON.parse(stored);
+  if (
+    typeof parsed !== "object" ||
+    parsed === null ||
+    !("id" in parsed) ||
+    typeof parsed.id !== "string" ||
+    !("email" in parsed) ||
+    typeof parsed.email !== "string" ||
+    !("name" in parsed) ||
+    typeof parsed.name !== "string" ||
+    !("role" in parsed) ||
+    (parsed.role !== "admin" && parsed.role !== "user")
+  ) {
+    throw new Error("The cached sign-in profile is corrupted.");
+  }
+  return parsed as CachedAuthUser;
+}
+
+function writeCachedUser(user: StaffUser): void {
+  if (typeof localStorage === "undefined") return;
+  localStorage.setItem(CACHED_USER_KEY, JSON.stringify(toCachedAuthUser(user)));
+}
+
+function toCachedAuthUser(user: StaffUser): CachedAuthUser {
+  return {
+    id: user.id,
+    email: user.email ?? "",
+    name: user.name,
+    role: user.role === "admin" ? "admin" : "user",
+  };
+}
+
+function writeCachedCredentials(user: StaffUser, password: string): void {
+  if (typeof localStorage === "undefined") return;
+  localStorage.setItem(
+    CACHED_CREDENTIALS_KEY,
+    JSON.stringify({
+      userId: user.id,
+      username: user.username,
+      passwordHash: hashSync(password, 10),
+      profile: toCachedAuthUser(user),
+    } satisfies CachedCredentials),
+  );
+}
+
 function writeCachedState(state: AppState): void {
   if (typeof localStorage !== "undefined") localStorage.setItem(STATE_KEY, JSON.stringify(state));
+}
+
+function getInitialCache(): { state: AppState; cached: boolean } {
+  const state = readCachedState();
+  const cachedUser = readCachedUser();
+  if (!state) return { state: emptyState(), cached: false };
+  if (!cachedUser) return { state, cached: true };
+  const user = state.users.find((candidate) => candidate.id === cachedUser.id);
+  if (!user || user.status !== "active") return { state, cached: true };
+  const cachedSession = state.session?.userId === user.id ? state.session : null;
+  const lastActivityAt = cachedSession?.lastActivityAt ?? cachedSession?.startedAt;
+  if (lastActivityAt && sessionRemaining(lastActivityAt, Date.now()) <= 0) {
+    const expired = { ...state, session: null };
+    writeCachedState(expired);
+    return { state: expired, cached: true };
+  }
+  const restoredUser: StaffUser = {
+    ...user,
+    email: cachedUser.email,
+    name: cachedUser.name,
+    role: cachedUser.role === "admin" ? "admin" : "receptionist",
+  };
+  const timestamp = new Date().toISOString();
+  const restored = {
+    ...state,
+    users: state.users.map((candidate) =>
+      candidate.id === restoredUser.id ? restoredUser : candidate,
+    ),
+    session: {
+      userId: user.id,
+      startedAt: cachedSession?.startedAt ?? timestamp,
+      lastActivityAt: lastActivityAt ?? timestamp,
+    },
+  };
+  writeCachedState(restored);
+  return { state: restored, cached: true };
 }
 
 function cachedActor(admin = false): StaffUser {
@@ -180,6 +315,7 @@ function cachedActor(admin = false): StaffUser {
 function isConnectivityError(error: unknown): boolean {
   if (!isBrowserOnline()) return true;
   if (error instanceof TypeError) return true;
+  if (error instanceof Error && error.name === "AbortError") return true;
   const message = error instanceof Error ? error.message : String(error);
   return /network|fetch|offline|connection|timed?\s*out|failed to reach/i.test(message);
 }
@@ -219,7 +355,9 @@ function applyQueuedMutation(state: AppState, mutation: QueuedMutation): AppStat
     else logs.unshift(mapped);
   };
 
-  if (mutation.type === "REGISTER_VISITOR") {
+  if (mutation.type === "INSERT_ACTIVITY_LOG") {
+    addLog(mutation.payload.log);
+  } else if (mutation.type === "REGISTER_VISITOR") {
     const mapped = mapVisitor(mutation.payload.visitor);
     if (!visitors.some((visitor) => visitor.id === mapped.id)) visitors.unshift(mapped);
     addLog(mutation.payload.log);
@@ -270,6 +408,10 @@ async function insertQueueLogs(logs: QueueLog[]): Promise<void> {
 }
 
 async function replayMutation(mutation: QueuedMutation): Promise<void> {
+  if (mutation.type === "INSERT_ACTIVITY_LOG") {
+    await insertQueueLogs([mutation.payload.log]);
+    return;
+  }
   if (mutation.type === "REGISTER_VISITOR") {
     const { error } = await db
       .from("visitors")
@@ -324,22 +466,43 @@ async function replayMutation(mutation: QueuedMutation): Promise<void> {
 }
 
 export async function syncOfflineQueue(): Promise<void> {
-  if (!isBrowserOnline()) return;
+  if (!isBrowserOnline() || getPendingSyncCount() === 0) return;
+  dispatchSyncState("syncing");
   await enqueue(async () => {
     const items = readOfflineQueue().sort((a, b) => a.timestamp.localeCompare(b.timestamp));
     while (items.length) {
       const item = items[0];
       if (!item) break;
       try {
-        await replayMutation(item);
+        await withTimeout(
+          replayMutation(item),
+          "The connection timed out while syncing offline changes.",
+        );
       } catch (error) {
         console.error("Offline changes could not be synced; they remain queued.", error);
-        break;
+        dispatchSyncState("error");
+        throw error;
       }
       items.shift();
       writeOfflineQueue(items);
     }
+    if (isBrowserOnline()) {
+      try {
+        const fresh = await withTimeout(
+          loadState(),
+          "The connection timed out while refreshing synced records.",
+        );
+        writeCachedState(fresh);
+      } catch (error) {
+        if (!isConnectivityError(error)) {
+          dispatchSyncState("error");
+          throw error;
+        }
+        console.error("Offline changes synced, but the latest records could not be fetched.", error);
+      }
+    }
   });
+  dispatchSyncState("synced");
 }
 
 if (typeof window !== "undefined") {
@@ -362,7 +525,10 @@ async function mutateVisitorWrite<T>(
 
     let result: T;
     try {
-      result = await operation();
+      result = await withTimeout(
+        operation(),
+        "The connection timed out. The change was saved locally and queued for sync.",
+      );
     } catch (error) {
       if (!isConnectivityError(error)) throw error;
       const offline = makeOfflineMutation();
@@ -400,6 +566,7 @@ function recordId(prefix: "VIS" | "LOG"): string {
 function mapProfile(row: ProfileRow): StaffUser {
   return {
     id: row.id,
+    email: row.email,
     name: row.name,
     username: row.username,
     password: "",
@@ -480,7 +647,10 @@ function normalizeVisitor(input: VisitorFields): VisitorFields {
 }
 
 async function getActor(admin = false): Promise<StaffUser> {
-  const { data: sessionData, error: sessionError } = await db.auth.getSession();
+  const { data: sessionData, error: sessionError } = await withTimeout(
+    db.auth.getSession(),
+    "The connection timed out while checking your session.",
+  );
   failOnError(sessionError, "Could not verify your session");
   const authUser = sessionData.session?.user;
   if (!authUser) throw new Error("Your session has expired. Please sign in again.");
@@ -525,14 +695,21 @@ async function writeLog(
 }
 
 async function loadState(): Promise<AppState> {
-  const { data: sessionData, error: sessionError } = await db.auth.getSession();
+  const { data: sessionData, error: sessionError } = await withTimeout(
+    db.auth.getSession(),
+    "The connection timed out while checking your session.",
+  );
   failOnError(sessionError, "Could not check the Supabase session");
   const authUser = sessionData.session?.user;
   if (!authUser) {
     activityUserId = null;
     lastActivityAt = null;
-    if (typeof localStorage !== "undefined") localStorage.removeItem(STATE_KEY);
-    return emptyState();
+    if (typeof localStorage !== "undefined") localStorage.removeItem(CACHED_USER_KEY);
+    const cached = readCachedState();
+    if (!cached) return emptyState();
+    const signedOutState = { ...cached, session: null };
+    writeCachedState(signedOutState);
+    return signedOutState;
   }
 
   const [profilesResult, visitorsResult, logsResult] = await Promise.all([
@@ -569,6 +746,7 @@ async function loadState(): Promise<AppState> {
   };
   const optimisticState = readOfflineQueue().reduce(applyQueuedMutation, state);
   writeCachedState(optimisticState);
+  writeCachedUser(currentUser);
   return optimisticState;
 }
 
@@ -746,7 +924,65 @@ async function fetchVisitor(id: string): Promise<VisitorRow> {
   return data as VisitorRow;
 }
 
+function offlineLogin(username: string, password: string): { state: AppState; result: AuthResult } {
+  const cachedState = readCachedState() ?? emptyState();
+  const rawCredentials =
+    typeof localStorage === "undefined"
+      ? null
+      : localStorage.getItem(CACHED_CREDENTIALS_KEY);
+  if (!rawCredentials)
+    return {
+      state: cachedState,
+      result: { ok: false, error: "Sign in online once before using offline sign-in." },
+    };
+
+  const credentials = JSON.parse(rawCredentials) as CachedCredentials;
+  const cachedProfile = readCachedUser() ?? credentials.profile;
+  const cachedUser = cachedState.users.find((candidate) => candidate.id === credentials.userId);
+  const user = cachedUser
+    ? {
+        ...cachedUser,
+        email: cachedProfile.email,
+        name: cachedProfile.name,
+        role: cachedProfile.role === "admin" ? "admin" as const : "receptionist" as const,
+      }
+    : null;
+  if (
+    !user ||
+    user.status !== "active" ||
+    cachedProfile.id !== user.id ||
+    (credentials.username.toLowerCase() !== username.trim().toLowerCase() &&
+      cachedProfile.email.toLowerCase() !== username.trim().toLowerCase()) ||
+    !compareSync(password, credentials.passwordHash)
+  ) {
+    return {
+      state: cachedState,
+      result: { ok: false, error: "Invalid username or password. Please try again." },
+    };
+  }
+
+  const timestamp = new Date().toISOString();
+  const state: AppState = {
+    ...cachedState,
+    session: { userId: user.id, startedAt: timestamp, lastActivityAt: timestamp },
+  };
+  writeCachedUser(user);
+  writeCachedState(state);
+  const log = queueLog(toQueueActor(user), timestamp, "Login", user.id, "Signed in offline");
+  const mutation: QueuedMutation = {
+    id: crypto.randomUUID(),
+    type: "INSERT_ACTIVITY_LOG",
+    timestamp,
+    payload: { log },
+  };
+  return {
+    state: appendOfflineMutation(mutation),
+    result: { ok: true, user },
+  };
+}
+
 export const officeService = {
+  getInitialCache,
   load: async () => {
     if (!isBrowserOnline()) {
       return enqueue(async () => {
@@ -757,41 +993,60 @@ export const officeService = {
         return state;
       });
     }
-    if (isBrowserOnline() && getPendingSyncCount() > 0) await syncOfflineQueue();
-    return enqueue(loadState);
+    try {
+      if (getPendingSyncCount() > 0) await syncOfflineQueue();
+    } catch (error) {
+      const cached = readCachedState();
+      if (cached && isConnectivityError(error)) return cached;
+      throw error;
+    }
+    try {
+      return await enqueue(() =>
+        withTimeout(loadState(), "The connection timed out while loading office records."),
+      );
+    } catch (error) {
+      const cached = readCachedState();
+      if (cached && isConnectivityError(error)) return cached;
+      throw error;
+    }
   },
   getPendingSyncCount,
   syncOfflineQueue,
 
   login: (username: string, password: string): Promise<{ state: AppState; result: AuthResult }> =>
     enqueue(async () => {
+      if (!isBrowserOnline()) return offlineLogin(username, password);
       const identifier = username.trim();
       const email = identifier.includes("@")
         ? identifier
         : `${identifier.toLowerCase()}@guestflow.local`;
-      const { data, error } = await db.auth.signInWithPassword({ email, password });
+      let signIn: Awaited<ReturnType<typeof db.auth.signInWithPassword>>;
+      try {
+        signIn = await withTimeout(
+          db.auth.signInWithPassword({ email, password }),
+          "The connection timed out while signing in.",
+        );
+      } catch (error) {
+        if (isConnectivityError(error)) return offlineLogin(username, password);
+        throw error;
+      }
+      const { data, error } = signIn;
       if (error) {
         if (error.status !== 400 && error.status !== 401) {
+          if (isConnectivityError(error)) return offlineLogin(username, password);
           throw new Error(`Could not sign in: ${error.message}`);
         }
-        return {
-          state: await loadState(),
-          result: { ok: false, error: "Invalid username or password. Please try again." },
-        };
+        return { state: readCachedState() ?? emptyState(), result: { ok: false, error: "Invalid username or password. Please try again." } };
       }
       if (!data.user) {
-        return {
-          state: await loadState(),
-          result: { ok: false, error: "Invalid username or password. Please try again." } as const,
-        };
+        return { state: readCachedState() ?? emptyState(), result: { ok: false, error: "Invalid username or password. Please try again." } as const };
       }
 
       try {
-        const { data: profile, error: profileError } = await db
-          .from("profiles")
-          .select("*")
-          .eq("id", data.user.id)
-          .single();
+        const { data: profile, error: profileError } = await withTimeout(
+          db.from("profiles").select("*").eq("id", data.user.id).single(),
+          "The connection timed out while loading your staff profile.",
+        );
         failOnError(profileError, "Could not load your staff profile");
         const user = mapProfile(profile as ProfileRow);
         if (user.status !== "active") {
@@ -806,16 +1061,78 @@ export const officeService = {
         }
         activityUserId = user.id;
         lastActivityAt = new Date().toISOString();
-        await writeLog(user, "Login");
-        return { state: await loadState(), result: { ok: true, user } as const };
+        writeCachedCredentials(user, password);
+        writeCachedUser(user);
+        const cached = readCachedState() ?? emptyState();
+        const signedInState: AppState = {
+          ...cached,
+          users: [...cached.users.filter((candidate) => candidate.id !== user.id), user],
+          session: { userId: user.id, startedAt: lastActivityAt, lastActivityAt },
+        };
+        writeCachedState(signedInState);
+        try {
+          await withTimeout(writeLog(user, "Login"), "The connection timed out while recording sign-in.");
+        } catch (logError) {
+          if (!isConnectivityError(logError)) throw logError;
+          const timestamp = new Date().toISOString();
+          const mutation: QueuedMutation = {
+            id: crypto.randomUUID(),
+            type: "INSERT_ACTIVITY_LOG",
+            timestamp,
+            payload: { log: queueLog(toQueueActor(user), timestamp, "Login", user.id, "Signed in") },
+          };
+          appendOfflineMutation(mutation);
+        }
+        try {
+          return { state: await loadState(), result: { ok: true, user } as const };
+        } catch (loadError) {
+          if (!isConnectivityError(loadError)) throw loadError;
+          return { state: readCachedState() ?? signedInState, result: { ok: true, user } as const };
+        }
       } catch (error) {
+        if (isConnectivityError(error)) return offlineLogin(username, password);
         await db.auth.signOut();
         throw error;
       }
     }),
 
-  logout: (expired = false) =>
-    mutate(async () => {
+  logout: (expired = false) => {
+    if (!isBrowserOnline()) {
+      return enqueue(async () => {
+        let state = readCachedState() ?? emptyState();
+        const user = state.users.find((candidate) => candidate.id === state.session?.userId);
+        if (user) {
+          const timestamp = new Date().toISOString();
+          const actor = toQueueActor(user);
+          const actionsToLog: Array<{ action: LogAction; details: string }> = expired
+            ? [
+                { action: "Session expired", details: "15 minutes of inactivity" },
+                { action: "Logout", details: "Automatic sign-out after inactivity" },
+              ]
+            : [{ action: "Logout", details: "Signed out offline" }];
+          for (const entry of actionsToLog) {
+            const mutation: QueuedMutation = {
+              id: crypto.randomUUID(),
+              type: "INSERT_ACTIVITY_LOG",
+              timestamp,
+              payload: {
+                log: queueLog(actor, timestamp, entry.action, user.id, entry.details),
+              },
+            };
+            state = appendOfflineMutation(mutation);
+          }
+        }
+        const next = { ...state, session: null };
+        writeCachedState(next);
+        if (typeof localStorage !== "undefined") localStorage.removeItem(CACHED_USER_KEY);
+        const { error } = await db.auth.signOut({ scope: "local" });
+        failOnError(error, "Could not sign out");
+        activityUserId = null;
+        lastActivityAt = null;
+        return { state: next, result: undefined };
+      });
+    }
+    return mutate(async () => {
       const { data } = await db.auth.getSession();
       if (data.session) {
         const user = await getActor();
@@ -831,14 +1148,25 @@ export const officeService = {
       failOnError(error, "Could not sign out");
       activityUserId = null;
       lastActivityAt = null;
-    }),
+      if (typeof localStorage !== "undefined") localStorage.removeItem(CACHED_USER_KEY);
+    });
+  },
 
-  touchSession: () =>
-    mutate(async () => {
+  touchSession: () => {
+    if (!isBrowserOnline()) {
+      return enqueue(async () => {
+        cachedActor();
+        const state = readCachedState();
+        if (!state) throw new Error("Load records while online before making offline changes.");
+        return { state, result: undefined };
+      });
+    }
+    return mutate(async () => {
       const user = await getActor();
       lastActivityAt = new Date().toISOString();
       activityUserId = user.id;
-    }),
+    });
+  },
 
   registerVisitor: (input: VisitorFields) => {
     const timestamp = new Date().toISOString();
